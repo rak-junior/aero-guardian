@@ -1250,7 +1250,7 @@ Examples:
     python run_automated_pipeline.py --batch data.json # Batch processing from JSON
 
 QGroundControl Connection:
-    IP:   172.27.166.100
+    IP:   {WSL_IP}
     Port: 18570
         """
     )
@@ -1263,7 +1263,7 @@ QGroundControl Connection:
                         help="Run without Gazebo GUI")
     parser.add_argument("--skip-px4", action="store_true",
                         help="Skip PX4 startup (assume already running)")
-    parser.add_argument("--qgc-ip", type=str, default="172.27.166.100",
+    parser.add_argument("--qgc-ip", type=str, default="{WSL_IP}",
                         help="QGroundControl host IP")
     parser.add_argument("--qgc-port", type=int, default=18570,
                         help="QGroundControl port")
