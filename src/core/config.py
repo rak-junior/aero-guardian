@@ -60,7 +60,7 @@ class Config:
     
     Attributes:
         openai_api_key: OpenAI API key for LLM calls
-        openai_model: Model to use (default: gpt-4o-mini)
+        openai_model: Model to use (default: gpt-4o)
         openai_temperature: Sampling temperature (default: 0.1)
         openai_max_tokens: Maximum response tokens (default: 4096)
         embedding_model: Model for text embeddings
@@ -68,7 +68,7 @@ class Config:
         project_root: Path to project root directory
     """
     openai_api_key: str
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-4o"
     openai_temperature: float = 0.1
     openai_max_tokens: int = 4096
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"

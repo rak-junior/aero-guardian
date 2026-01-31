@@ -3,20 +3,21 @@ AeroGuardian Automated Pipeline Runner
 ======================================
 Author: AeroGuardian Member
 Date: 2026-01-19
+Updated: 2026-01-31
 Version: 1.0
 
 Fully automated pipeline that runs everything without user input:
 1. Start PX4 SITL with Gazebo GUI in WSL
-2. Connect to QGroundControl at 172.27.166.100:18570
-3. Load FAA incident and generate configuration via LLM
+2. Connect to QGroundControl at configurable IP:port
+3. Load FAA UAS sighting report and generate configuration via LLM
 4. Execute flight mission and capture telemetry
 5. Generate safety reports (PDF/Excel/JSON)
 
 Usage:
-    python run_automated_pipeline.py                    # Default: incident 0
-    python run_automated_pipeline.py --incident 5      # Specific incident
-    python run_automated_pipeline.py --headless        # No Gazebo GUI
-    python run_automated_pipeline.py --skip-px4        # Skip PX4 startup (already running)
+    python run_automated_pipeline.py                    # Default: sighting 0
+    python run_automated_pipeline.py -i 5               # Specific sighting
+    python run_automated_pipeline.py --headless         # No Gazebo GUI
+    python run_automated_pipeline.py --skip-px4         # Skip PX4 startup (already running)
 """
 
 import os
@@ -1014,21 +1015,20 @@ class AutomatedPipeline:
         logger.info("-" * 60)
     
     def _load_incident(self, index: int) -> Dict:
-        """Load FAA incident."""
-        from src.faa.incident_filter import get_incident_filter
+        """Load FAA sighting by index."""
+        from src.faa.sighting_filter import get_sighting_filter
         
-        filter = get_incident_filter()
-        count = filter.load()
-        logger.info(f"  Available incidents: {count}")
+        sighting_filter = get_sighting_filter()
+        count = sighting_filter.load()
+        logger.info(f"  Available sightings: {count}")
         
-        incident = filter.get_by_index(index)
-        return incident
+        sighting = sighting_filter.get_by_index(index)
+        return sighting
     
     def _generate_config(self, incident: Dict) -> Dict:
         """Generate flight configuration using LLM."""
         from src.core.geocoder import geocode_incident
         from src.llm.client import get_llm_client
-        import math
         
         # Geocode location
         lat, lon = geocode_incident(incident)
@@ -1256,7 +1256,7 @@ QGroundControl Connection:
     )
     
     parser.add_argument("--incident", "-i", type=int, default=0,
-                        help="FAA incident index to process (default: 0)")
+                        help="FAA sighting index to process (default: 0)")
     parser.add_argument("--batch", "-b", type=str, default=None,
                         help="JSON file for batch processing (single object or array)")
     parser.add_argument("--headless", action="store_true",

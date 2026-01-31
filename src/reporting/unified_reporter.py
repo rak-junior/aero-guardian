@@ -1,13 +1,18 @@
 """
-Unified Report Generator - PDF, Excel, JSON
-============================================
+Unified Report Generator
+========================
 Author: AeroGuardian Member
 Date: 2026-01-16
+Updated: 2026-01-31
 
-Generates safety reports standard:
-- PDF: Professional single-page report
-- Excel: Tabular telemetry and analysis data
-- JSON: Machine-readable full data
+Generates safety reports from FAA UAS sighting analysis:
+
+SAFETY REPORTS (per-sighting):
+- JSON: Machine-readable full data structure
+- PDF: Professional single-page executive report
+
+EVALUATION OUTPUTS (separate):
+- Excel: ESRI evaluation metrics (SFS, BRR, ECC scores)
 """
 
 import json
@@ -388,14 +393,32 @@ class UnifiedReporter:
         target_alt = max(alts) if alts else 0
         altitude_deviation = sum(abs(a - target_alt) for a in alts) / len(alts) if alts else 0
         
-        # Detect failsafe events (sudden altitude drops, mode changes)
+        # Detect failsafe events (expanded to include attitude instabilities)
         failsafe_events = []
+        max_roll_abs = max(abs(r) for r in rolls) if rolls else 0
+        max_pitch = max(pitches) if pitches else 0
+        
+        # Check for motor failure pattern (excessive roll)
+        if max_roll_abs > 30:  # 30° roll is abnormal for multirotors
+            failsafe_events.append("MOTOR_FAILURE_PATTERN")
+        
+        # Check for control anomaly (excessive pitch)
+        if max_pitch > 20:  # 20° pitch deviation
+            failsafe_events.append("CONTROL_ANOMALY")
+        
+        # Check for altitude-based events
         for i in range(1, len(telemetry)):
             alt_drop = telemetry[i-1].get("alt", 0) - telemetry[i].get("alt", 0)
             if alt_drop > 5:  # Sudden 5m drop
                 failsafe_events.append("ALTITUDE_DROP")
             if abs(telemetry[i].get("vz", 0)) > 3:  # Fast vertical speed
                 failsafe_events.append("FAST_DESCENT")
+        
+        # Check for position drift (GPS anomaly)
+        if gps_variance > 50:  # 50m drift indicates significant issue
+            failsafe_events.append("POSITION_DRIFT_CRITICAL")
+        elif gps_variance > 10:
+            failsafe_events.append("POSITION_DRIFT_HIGH")
         
         # Remove duplicates
         failsafe_events = list(set(failsafe_events))
@@ -406,11 +429,14 @@ class UnifiedReporter:
             "avg_altitude_m": sum(alts) / len(alts) if alts else 0,
             "max_speed_mps": max(speeds) if speeds else 0,
             "avg_speed_mps": sum(speeds) / len(speeds) if speeds else 0,
+            "max_roll_deg": round(max(abs(r) for r in rolls), 1) if rolls else 0,  # ADDED: Critical for safety report!
+            "max_pitch_deg": round(max(pitches), 1) if pitches else 0,  # ADDED: For consistency
             "data_points": len(telemetry),
             
             # LLM-ready telemetry summary format
             "flight_summary": {
                 "max_pitch": round(max(pitches), 1) if pitches else 0,
+                "max_roll": round(max(abs(r) for r in rolls), 1) if rolls else 0,  # ADDED: Roll in flight_summary
                 "roll_oscillation_freq": round(roll_oscillation_freq, 2),
                 "gps_variance": round(gps_variance, 1),
                 "altitude_deviation": round(altitude_deviation, 1),
@@ -419,6 +445,7 @@ class UnifiedReporter:
             },
             "expected_behavior": {
                 "nominal_pitch_range": [-15, 15],
+                "nominal_roll_range": [-30, 30],
                 "gps_variance_max": 1.0,
                 "max_roll_oscillation": 1.0,
                 "altitude_tolerance": 5.0,

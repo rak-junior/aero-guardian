@@ -63,19 +63,9 @@ docs/
 # Data Files (Large / Sensitive / Generated)
 # -----------------------------------------------------------------------------
 # All raw FAA data
-data/raw/
-data/processed/
+# data/raw/
+# data/processed/
 data/test/
-
-# Raw telemetry (too large for git)
-data/alfa_telemetry/raw/
-data/alfa_telemetry/cleaned/
-
-# Vector database (regeneratable)
-data/vector_db/
-
-# Demo outputs
-data/demo/outputs/
 
 # -----------------------------------------------------------------------------
 # Model Artifacts (trained models)
@@ -132,11 +122,3 @@ telemetry/
 *.bak
 *.temp
 *.cache
-
-# -----------------------------------------------------------------------------
-# Archive / Legacy (removed from codebase)
-# -----------------------------------------------------------------------------
-# These files have been refactored and should not be re-added
-# src/llm/llm_client.py -> replaced by src/llm/client.py
-# src/llm/dspy_signatures.py -> replaced by src/llm/signatures.py
-# src/simulation/faa_scenario_generator.py -> moved to src/llm/scenario_generator.py

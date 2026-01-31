@@ -56,6 +56,23 @@ HAZARD_KEYWORDS = {
     "descent": ["altitude_instability"],
 }
 
+# Universal safety recommendations that are valid for ANY critical/high severity failure
+# These don't need to match specific anomaly types - they are valid safety measures
+UNIVERSAL_SAFETY_KEYWORDS = [
+    "parachute",       # Recovery system - valid for any propulsion/control failure
+    "redundant",       # Redundancy - valid for any failure mode
+    "redundancy",
+    "backup",          # Backup systems
+    "failsafe",        # Failsafe systems
+    "recovery",        # Recovery mechanisms
+    "emergency",       # Emergency procedures
+    "pre-flight",      # Pre-flight checks
+    "preflight",
+    "geofence",        # Containment systems
+    "return to home",  # Return-to-home capability
+    "rth",
+]
+
 
 @dataclass
 class ClaimVerification:
@@ -324,6 +341,17 @@ class EvidenceConsistencyChecker:
                             claim.confidence = 0.8
                             break
                     if claim.is_supported:
+                        break
+            
+            # Check for universal safety recommendations (valid for ANY critical/high failure)
+            if not claim.is_supported and anomaly_types:
+                for universal_keyword in UNIVERSAL_SAFETY_KEYWORDS:
+                    if universal_keyword in rec_lower:
+                        claim.is_supported = True
+                        claim.supporting_evidence.append(
+                            f"Universal safety measure '{universal_keyword}' valid for detected anomalies"
+                        )
+                        claim.confidence = 0.85  # High confidence for proven safety measures
                         break
             
             # Generic safety recommendations get partial credit

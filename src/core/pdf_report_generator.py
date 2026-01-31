@@ -33,7 +33,6 @@ except ImportError:
 
 class PDFGenerationError(Exception):
     """Raised when PDF generation fails due to missing data."""
-    pass
 
 
 def create_styles():

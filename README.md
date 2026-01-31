@@ -2,11 +2,11 @@
 
 **Pre-Flight UAV Safety Analysis System using LLM-Driven Scenario Translation**
 
-Transform FAA UAS incident reports into actionable pre-flight safety recommendations through automated simulation and AI analysis.
+Transform FAA UAS sighting reports into actionable pre-flight safety recommendations through automated simulation and AI analysis.
 
-**Author:** AeroGuardian Member
-**Version:** 1.0  
-**Date:** 2026-01-01
+**Author:** AeroGuardian Member  
+**Version:** 1.0 
+**Date:** 2026-01-31
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![PX4](https://img.shields.io/badge/PX4-v1.14.3-orange.svg)](https://px4.io/)
@@ -31,9 +31,9 @@ Transform FAA UAS incident reports into actionable pre-flight safety recommendat
 
 ## 🎯 Overview
 
-AeroGuardian is an **automated pre-flight safety analysis system** that learns from historical FAA UAS incidents to prevent future accidents. The system:
+AeroGuardian is an **automated pre-flight safety analysis system** that learns from historical FAA UAS sighting reports to prevent future accidents. The system:
 
-1. **Ingests real FAA incidents** (8,918+ documented UAS incidents)
+1. **Ingests real FAA sighting reports** (8,031 testable UAS sightings)
 2. **Translates to simulation** using LLM-driven parameter extraction
 3. **Runs PX4 SITL simulation** with realistic fault injection
 4. **Captures full telemetry** at 10 Hz sampling rate
@@ -45,11 +45,11 @@ AeroGuardian is an **automated pre-flight safety analysis system** that learns f
 |:--------|:------------|
 | 🤖 **2-LLM Pipeline** | DSPy-constrained structured output with GPT-4o |
 | 🎮 **PX4 SITL Integration** | Real flight simulation with Gazebo GUI |
-| � **Multi-Stage Failure Emulation** | 5-category failure models (propulsion, navigation, battery, control, sensor) |
-| �📊 **34-Parameter Config** | Comprehensive LLM-generated simulation configuration |
+| 🔧 **Multi-Stage Failure Emulation** | 5-category failure models (propulsion, navigation, battery, control, sensor) |
+| 📊 **31-Parameter Config** | Comprehensive LLM-generated simulation configuration |
 | 📈 **Full Telemetry Capture** | GPS, IMU, battery, attitude at 10 Hz |
-| 📑 **Multi-Format Reports** | JSON, Excel, PDF with executive summary |
-| 📊 **ESRI Framework** | Scientific evaluation: SFS × BRR × ECC |
+| 📑 **Safety Reports** | JSON + PDF with executive summary |
+| 📊 **ESRI Framework** | Scientific evaluation: SFS × BRR × ECC (Excel output) |
 | 🔗 **QGroundControl** | Real-time visualization at {WSL_IP}:18570 |
 | 📝 **Comprehensive Logging** | Single daily log with full LLM I/O tracking |
 
@@ -63,13 +63,13 @@ AeroGuardian is an **automated pre-flight safety analysis system** that learns f
 └────────────────────────────────────────────────────────────────────┘
 
     ┌─────────────────────────┐
-    │  📥 FAA UAS Incidents   │
+    │  📥 FAA UAS Sightings   │
     │      (8,918+ cases)     │
     └───────────┬─────────────┘
                 │
                 ▼
     ┌─────────────────────────┐     ┌─────────────────────────┐
-    │   Incident Filter       │────▶│      Geocoder           │
+    │   Sighting Filter       │────▶│      Geocoder           │
     │   (Simulatable Only)    │     │   (Nominatim API)       │
     └───────────┬─────────────┘     └───────────┬─────────────┘
                 │                               │
@@ -78,7 +78,7 @@ AeroGuardian is an **automated pre-flight safety analysis system** that learns f
     ┌─────────────────────────────────────────────────────────────┐
     │  🤖 LLM #1: SCENARIO TRANSLATION (GPT-4o + DSPy)            │
     │  ─────────────────────────────────────────────────────────  │
-    │  INPUT:  FAA incident description + location                │
+    │  INPUT:  FAA sighting description + location                │
     │  OUTPUT: 31-parameter PX4 simulation config                 │
     │          • Mission profile  • Fault injection               │
     │          • Environment      • Waypoints                     │
@@ -101,19 +101,33 @@ AeroGuardian is an **automated pre-flight safety analysis system** that learns f
     └───────────────────────────┬─────────────────────────────────┘
                                 ▼
     ┌─────────────────────────────────────────────────────────────┐
-    │  🤖 LLM #2: SAFETY REPORT (GPT-4o + DSPy)                   │
+    │  🤖 LLM #2: PRE-FLIGHT SAFETY REPORT (GPT-4o + DSPy)         │
     │  ─────────────────────────────────────────────────────────  │
-    │  INPUT:  Incident + telemetry summary                       │
-    │  OUTPUT: Pre-flight safety report                           │
-    │          • Hazard level     • Recommendations               │
-    │          • Root cause       • Go/No-Go verdict              │
+    │  INPUT:  Sighting + fault_type + telemetry summary           │
+    │  OUTPUT: 3-Section Pre-Flight Safety Report                  │
+    │                                                              │
+    │  SECTION 1: Hazard & Root Cause                              │
+    │    • Safety level (CRITICAL/HIGH/MEDIUM/LOW)                 │
+    │    • Pre-Flight Decision: GO / CAUTION / NO-GO               │
+    │    • Primary hazard aligned with fault_type                  │
+    │    • Observed effects from telemetry                         │
+    │                                                              │
+    │  SECTION 2: Design Constraints & Recommendations             │
+    │    • 2-4 operational constraints                             │
+    │    • 3-5 actionable engineering mitigations                  │
+    │                                                              │
+    │  SECTION 3: Evidence-Based Explanation                       │
+    │    • Analysis chain: fault_type → telemetry → verdict        │
+    │    • Honest about simulation limitations if applicable       │
+    │                                                              │
     └───────────────────────────┬─────────────────────────────────┘
                                 ▼
     ┌─────────────────────────────────────────────────────────────┐
     │  📤 UNIFIED REPORTER                                        │
     │  ─────────────────────────────────────────────────────────  │
-    │  outputs/incidents/{incident_id}_{timestamp}/               │
-    │  ├── report.json    ├── report.xlsx    └── report.pdf      │
+    │  outputs/{sighting_id}_{timestamp}/                          │
+    │  ├── report.json         ← Machine-readable report           │
+    │  └── report.pdf          ← Executive summary PDF             │
     └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -124,7 +138,7 @@ AeroGuardian is an **automated pre-flight safety analysis system** that learns f
 ### LLM #1: Scenario Translation
 
 ```
-FAA Incident Text ──▶ DSPy FAA_To_PX4_Complete ──▶ 31-Parameter Config
+FAA Sighting Text ──▶ DSPy FAA_To_PX4_Complete ──▶ 31-Parameter Config
                                                    ├── Mission Profile
                                                    ├── Fault Injection
                                                    ├── Environment
@@ -137,12 +151,30 @@ FAA Incident Text ──▶ DSPy FAA_To_PX4_Complete ──▶ 31-Parameter Conf
 PX4 Config ──▶ MAVSDK Mission ──▶ Telemetry @ 10Hz ──▶ Anomaly Detection ──▶ Feature Summary
 ```
 
-### LLM #2: Safety Report
+### LLM #2: Pre-Flight Safety Report (3-Section Structure)
 
 ```
-Incident + Telemetry ──▶ DSPy GeneratePreFlightReport ──▶ ├── Hazard Assessment
-                                                          ├── Prevention Actions
-                                                          └── Go/No-Go Decision
+Sighting + fault_type + Telemetry ──▶ DSPy GeneratePreFlightReport ──▶
+
+  ─────────────────────────────────────────────────────────────────────
+  SECTION 1: HAZARD & ROOT CAUSE
+  ─────────────────────────────────────────────────────────────────────
+  • Safety Level: CRITICAL / HIGH / MEDIUM / LOW
+  • Pre-Flight Decision: GO / CAUTION / NO-GO
+  • Primary Hazard: Aligned with simulated fault_type
+  • Observed Effect: From telemetry analysis
+
+  ─────────────────────────────────────────────────────────────────────
+  SECTION 2: DESIGN CONSTRAINTS & RECOMMENDATIONS
+  ─────────────────────────────────────────────────────────────────────
+  • Design Constraints: 2-4 operational limitations
+  • Recommendations: 3-5 actionable engineering mitigations
+
+  ─────────────────────────────────────────────────────────────────────
+  SECTION 3: EVIDENCE-BASED EXPLANATION
+  ─────────────────────────────────────────────────────────────────────
+  • Analysis chain: fault_type → telemetry evidence → safety level
+  • Honest acknowledgment if simulation didn't reproduce expected failure
 ```
 
 ---
@@ -177,6 +209,46 @@ NOMINAL → INCIPIENT → PROPAGATION → CRITICAL → RESOLUTION
 - **Temporal Randomization**: Prevents LLM script-learning (onset: 5-20s, ±30% phase durations)
 - **Parameter Restoration**: Cleans up after emulation
 - **Graceful Fallback**: Uses controlled landing if emulation fails
+
+---
+
+## 📏 Simulation Scope & Limitations
+
+AeroGuardian prioritizes **failure mode behavior analysis** over exact scenario replication. This design choice is intentional and supported by established UAV safety research principles:
+
+### Altitude Capping (120m Maximum)
+
+| Aspect | Explanation |
+|--------|-------------|
+| **Why 120m?** | Standard consumer UAS operational ceiling under FAA Part 107 (400 ft AGL) |
+| **Physical Justification** | Motor failure dynamics (asymmetric thrust, yaw-roll coupling) are physics-invariant above ~30m - the aerodynamic forces scale proportionally regardless of absolute altitude |
+| **Research Goal** | Characterize **failure mode behavior** (e.g., spiral descent rate, recovery time), not replicate exact crash location |
+| **Limitation Acknowledgment** | Some sightings describe aircraft at 1000+ ft AGL - these high-altitude scenarios have longer descent times but identical failure physics |
+
+> [!IMPORTANT]
+> The altitude cap affects **time-to-impact**, not **failure mode signature**. A motor failure at 120m produces the same telemetry patterns (attitude variance, yaw rate deviation) as at 500m - the physics are identical.
+
+### Location Fidelity
+
+| Aspect | Approach |
+|--------|----------|
+| **Current Method** | Geocode to city/state center, generate waypoints around that position |
+| **Limitation** | Does not replicate precise location (e.g., "500 feet from airport runway") |
+| **Justification** | GPS coordinates affect QGC visualization, not failure mode physics |
+| **Future Enhancement** | For airport proximity scenarios, could add airspace awareness constraints |
+
+> [!NOTE]  
+> The primary purpose is to **study how specific failure modes manifest in telemetry** and generate pre-flight safety intelligence. Geographic precision is secondary to failure behavior fidelity.
+
+
+### Limitations Acknowledgment
+
+The LLM #2 safety report includes **evidence-based explanation** with explicit acknowledgment when:
+- Simulation altitude differs significantly from reported altitude
+- Location is approximated to city center
+- Failure mode was inferred from behavior description (not explicit in FAA report)
+
+This transparency ensures the safety report maintains scientific integrity.
 
 ---
 
@@ -228,16 +300,16 @@ python scripts/run_automated_pipeline.py --incident 0 --headless
 ### 4. View Results
 
 ```
-outputs/incidents/FAA_xxxxx_20260119_124500/
+outputs/FAA_xxxxx_20260119_124500/
 ├── generated/
-│   ├── full_configuration_output_from_llm.json
-│   └── full_telemetry_of_each_flight.json
+│   ├── full_configuration_output_from_llm.json  ← 31-parameter LLM #1 config
+│   └── full_telemetry_of_each_flight.json       ← Raw telemetry @ 10Hz
 ├── report/
-│   ├── report.json
-│   ├── report.xlsx
-│   └── report.pdf
+│   ├── report.json                              ← Machine-readable report
+│   └── report.pdf                               ← Executive summary PDF
 └── evaluation/
-    └── evaluation.xlsx
+    ├── evaluation.json                          ← ESRI metrics
+    └── evaluation_*.xlsx                        ← Detailed ESRI spreadsheet
 ```
 
 ---
@@ -301,8 +373,8 @@ Configure QGroundControl to listen on:
 ### Automated Pipeline
 
 ```bash
-# Process incident by index
-python scripts/run_automated_pipeline.py --incident 5
+# Process sighting by index
+python scripts/run_automated_pipeline.py -i 5
 
 # Specify QGC connection
 python scripts/run_automated_pipeline.py --qgc-ip {WSL_IP} --qgc-port 18570
@@ -351,7 +423,7 @@ aero-guardian/
 │   │   ├── pdf_report_generator.py # PDFGenerator
 │   │   └── config.py               # Config, get_config
 │   │
-│   ├── llm/                        # 2-LLM Pipeline (Industry Standard)
+│   ├── llm/                        # 2-LLM Pipeline
 │   │   ├── __init__.py             # Main exports: LLMClient
 │   │   ├── signatures.py           # DSPy signatures (FAA_To_PX4, Report)
 │   │   ├── scenario_generator.py   # LLM #1: FAA → PX4 config
@@ -382,15 +454,15 @@ aero-guardian/
 │   │   └── unified_reporter.py     # Multi-format report generation
 │   │
 │   └── faa/
-│       └── incident_filter.py      # Simulatable incident filter
+│       └── sighting_filter.py       # Simulatable sighting filter
 │
 ├── data/
 │   └── processed/
-│       └── faa_incidents/
-│           └── faa_incidents.json  # 8,918 FAA UAS incidents
+│       └── faa_reports/
+│           └── faa_reports.json     # 8,031 FAA UAS sighting reports
 │
 ├── outputs/
-│   └── incidents/                  # Per-incident output folders
+│   └── {sighting_id}_{timestamp}/   # Per-sighting output folders
 │
 ├── logs/
 │   └── 2026-01-30.log              # Daily consolidated log
@@ -404,7 +476,7 @@ aero-guardian/
 
 ## 📄 Configuration Formats
 
-### LLM Configuration Output (34 Parameters)
+### LLM Configuration Output (31 Parameters)
 
 `generated/full_configuration_output_from_llm.json`:
 
@@ -469,7 +541,7 @@ aero-guardian/
     },
     "reasoning": "FAA report describes GPS signal loss during survey..."
   },
-  "parameter_count": 34
+  "parameter_count": 31
 }
 ```
 
@@ -573,29 +645,28 @@ aero-guardian/
 
 ## 📂 Output Structure
 
-Each incident generates a structured output folder:
+Each sighting generates a structured output folder:
 
 ```
-outputs/incidents/{incident_id}_{timestamp}/
+outputs/{sighting_id}_{timestamp}/
 │
 ├── generated/                              # Raw LLM & simulation outputs
-│   ├── full_configuration_output_from_llm.json   # 34-parameter config
+│   ├── full_configuration_output_from_llm.json   # 31-parameter config
 │   └── full_telemetry_of_each_flight.json        # Complete telemetry
 │
 ├── report/                                 # Final safety reports
 │   ├── report.json                         # Structured report data
-│   ├── report.xlsx                         # Excel workbook (5 sheets)
 │   └── report.pdf                          # Professional PDF report
 │
-└── evaluation/                             # Research metrics
-    ├── evaluation.json                     # Per-incident evaluation
-    └── evaluation.xlsx                     # Evaluation metrics
+└── evaluation/                             # Research metrics (Excel here only)
+    ├── evaluation.json                     # Per-sighting evaluation
+    └── evaluation_*.xlsx                   # ESRI metrics spreadsheet
 ```
 
 ### Report Excel Sheets
 
 1. **Summary** - Executive overview
-2. **Incident** - FAA incident details
+2. **Sighting** - FAA sighting details
 3. **Configuration** - LLM-generated config
 4. **Telemetry** - Flight data summary
 5. **Evaluation** - Research metrics

@@ -3,18 +3,40 @@ FAA Module for AeroGuardian
 ============================
 Author: AeroGuardian Member
 Date: 2026-01-30
+Updated: 2026-01-31
 
-Incident filtering and loading for pre-flight safety analysis.
+FAA UAS Sighting Report filtering and loading for pre-flight safety analysis.
+
+Note: FAA UAS Sighting Reports document abnormal operations and near-miss encounters
+in the National Airspace System. This module provides filtering capabilities to
+identify sightings suitable for PX4 SITL simulation.
 """
 
 from pathlib import Path
 
 MODULE_ROOT = Path(__file__).parent
 
-# Import incident filter (main interface)
-try:
-    from .incident_filter import get_incident_filter, IncidentFilter
-except ImportError:
-    pass
+# Import sighting filter (main interface)
+from .sighting_filter import (
+    SightingFilter,
+    get_sighting_filter,
+    parse_altitude_from_text,
+    SIMULATABLE_TYPES,
+    FAILURE_KEYWORDS,
+)
 
-__all__ = ["get_incident_filter", "IncidentFilter"]
+# Backward compatibility aliases (deprecated - will be removed in future versions)
+IncidentFilter = SightingFilter
+get_incident_filter = get_sighting_filter
+
+__all__ = [
+    # Primary exports
+    "SightingFilter",
+    "get_sighting_filter",
+    "parse_altitude_from_text",
+    "SIMULATABLE_TYPES",
+    "FAILURE_KEYWORDS",
+    # Deprecated aliases
+    "IncidentFilter",
+    "get_incident_filter",
+]

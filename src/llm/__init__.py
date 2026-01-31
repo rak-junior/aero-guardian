@@ -4,7 +4,7 @@ LLM Module for AeroGuardian
 Author: AeroGuardian Member
 Date: 2026-01-30
 
-Industry-standard structure:
+Standard structure:
 - signatures.py: All DSPy signature definitions
 - scenario_generator.py: LLM #1 generator (FAA → PX4)
 - report_generator.py: LLM #2 generator (Telemetry → Report)

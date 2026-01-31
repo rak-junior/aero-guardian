@@ -3,15 +3,17 @@ Scenario Generator for AeroGuardian
 ====================================
 Author: AeroGuardian Member
 Date: 2026-01-30
+Updated: 2026-01-31
 
-Generates PX4 simulation configurations from FAA incident reports.
-Uses FAA_To_PX4_Complete DSPy signature.
+Generates PX4 simulation configurations from FAA UAS sighting reports.
+Uses FAA_To_PX4_Complete DSPy signature to translate natural language
+descriptions of operational anomalies into executable simulation parameters.
 
 USAGE:
     from src.llm import ScenarioGenerator
     
     generator = ScenarioGenerator()
-    config = generator.generate(faa_report_text, incident_id)
+    config = generator.generate(faa_report_text, sighting_id)
 """
 
 import os
@@ -68,7 +70,6 @@ def optimize_fault_timing(llm_onset_sec: int, mission_duration_sec: int = MAX_MI
 
 class ScenarioGenerationError(Exception):
     """Raised when scenario generation fails."""
-    pass
 
 
 @dataclass
@@ -119,13 +120,14 @@ class ScenarioConfig:
 
 class ScenarioGenerator:
     """
-    Generate PX4 simulation configurations from FAA incident reports.
+    Generate PX4 simulation configurations from FAA UAS sighting reports.
     
-    Uses FAA_To_PX4_Complete DSPy signature.
+    Uses FAA_To_PX4_Complete DSPy signature to translate natural language
+    descriptions of operational anomalies into executable simulation configs.
     
     USAGE:
         generator = ScenarioGenerator()
-        config = generator.generate(faa_report, incident_id)
+        config = generator.generate(faa_report, sighting_id)
     """
     
     def __init__(self):
@@ -171,7 +173,7 @@ class ScenarioGenerator:
         except Exception as e:
             raise ScenarioGenerationError(f"Failed to initialize LLM: {e}")
     
-    def _log_dspy_prompt(self, signature_name: str, incident_id: str):
+    def _log_dspy_prompt(self, signature_name: str, sighting_id: str):
         """Log the formatted DSPy prompt."""
         try:
             lm = dspy.settings.lm
@@ -191,18 +193,18 @@ class ScenarioGenerator:
             elif 'prompt' in last_entry:
                 prompt_text = last_entry['prompt']
             
-            logger.info(f"{'='*80}\nDSPy PROMPT - {signature_name} ({incident_id})\n{'='*80}\n{prompt_text}\n{'='*80}")
+            logger.info(f"{'='*80}\nDSPy PROMPT - {signature_name} ({sighting_id})\n{'='*80}\n{prompt_text}\n{'='*80}")
             
         except Exception as e:
             logger.debug(f"Prompt logging failed: {e}")
     
-    def generate(self, faa_report_text: str, incident_id: str) -> ScenarioConfig:
+    def generate(self, faa_report_text: str, sighting_id: str) -> ScenarioConfig:
         """
-        Generate PX4 config from FAA report.
+        Generate PX4 config from FAA sighting report.
         
         Args:
-            faa_report_text: Complete FAA incident report text
-            incident_id: FAA incident ID
+            faa_report_text: Complete FAA UAS sighting report text
+            sighting_id: FAA sighting ID
             
         Returns:
             ScenarioConfig with all simulation parameters
@@ -216,15 +218,15 @@ class ScenarioGenerator:
         if not faa_report_text or len(faa_report_text.strip()) < 20:
             raise ScenarioGenerationError("FAA report text is empty or too short")
         
-        logger.info(f"Generating config: {incident_id}")
+        logger.info(f"Generating config: {sighting_id}")
         
         try:
             result = self._translator(
                 faa_report_text=faa_report_text,
-                faa_incident_id=incident_id,
+                faa_incident_id=sighting_id,  # DSPy signature uses incident_id
             )
             
-            self._log_dspy_prompt("FAA_To_PX4_Complete", incident_id)
+            self._log_dspy_prompt("FAA_To_PX4_Complete", sighting_id)
             
             # Parse waypoints JSON
             try:
@@ -254,7 +256,7 @@ class ScenarioGenerator:
             logger.info(f"📊 Optimizations: Alt {raw_altitude_m:.0f}m→{clamped_altitude_m:.0f}m, Fault {raw_onset_sec}s→{optimized_onset_sec}s")
             
             config = ScenarioConfig(
-                faa_incident_id=incident_id,
+                faa_incident_id=sighting_id,  # Legacy field name for compatibility
                 faa_report_text=faa_report_text[:500],
                 
                 city=str(result.city),
@@ -294,19 +296,27 @@ class ScenarioGenerator:
         except Exception as e:
             raise ScenarioGenerationError(f"LLM generation failed: {e}")
     
-    def generate_from_dict(self, incident: Dict) -> ScenarioConfig:
-        """Generate from FAA incident dictionary."""
+    def generate_from_dict(self, sighting: Dict) -> ScenarioConfig:
+        """
+        Generate from FAA sighting dictionary.
+        
+        Args:
+            sighting: Dictionary containing FAA sighting data.
+            
+        Returns:
+            ScenarioConfig with all simulation parameters.
+        """
         parts = []
         for key in ["date", "city", "state", "summary", "description", "altitude", "uas_type", "incident_type"]:
-            if incident.get(key):
-                parts.append(f"{key.title()}: {incident[key]}")
+            if sighting.get(key):
+                parts.append(f"{key.title()}: {sighting[key]}")
         
         if not parts:
-            raise ScenarioGenerationError("Incident dict has no usable fields")
+            raise ScenarioGenerationError("Sighting dict has no usable fields")
         
         return self.generate(
             faa_report_text="\n".join(parts),
-            incident_id=incident.get("incident_id", "UNKNOWN"),
+            sighting_id=sighting.get("incident_id", "UNKNOWN"),  # Legacy key
         )
 
 
@@ -325,9 +335,9 @@ def get_scenario_generator() -> ScenarioGenerator:
     return _generator
 
 
-def generate_scenario(faa_report: str, incident_id: str) -> ScenarioConfig:
-    """Convenience function to generate scenario config."""
-    return get_scenario_generator().generate(faa_report, incident_id)
+def generate_scenario(faa_report: str, sighting_id: str) -> ScenarioConfig:
+    """Convenience function to generate scenario config from FAA sighting report."""
+    return get_scenario_generator().generate(faa_report, sighting_id)
 
 
 __all__ = [

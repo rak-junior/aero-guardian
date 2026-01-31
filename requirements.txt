@@ -4,7 +4,7 @@
 # Python 3.10+ Required
 # Author: AeroGuardian Member
 # Date: 2026-01-30
-# Version: 1.0 (Industry-Standard Refactor)
+# Version: 1.0
 #
 # Setup:
 #   python -m venv venv

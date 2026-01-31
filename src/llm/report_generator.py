@@ -32,7 +32,6 @@ logger = logging.getLogger("AeroGuardian.ReportGenerator")
 
 class ReportGenerationError(Exception):
     """Raised when report generation fails."""
-    pass
 
 
 @dataclass

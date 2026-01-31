@@ -222,8 +222,7 @@ class EvaluationExcelExporter:
         
         try:
             from openpyxl import Workbook
-            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-            from openpyxl.utils import get_column_letter
+            from openpyxl.styles import Font, PatternFill
         except ImportError:
             logger.warning("openpyxl not installed, skipping Excel export")
             return None
@@ -328,8 +327,7 @@ class EvaluationExcelExporter:
         
         try:
             from openpyxl import Workbook
-            from openpyxl.styles import Font, PatternFill, Alignment
-            from openpyxl.chart import BarChart, Reference
+            from openpyxl.styles import Font, PatternFill
         except ImportError:
             logger.warning("openpyxl not installed, skipping Excel export")
             return None

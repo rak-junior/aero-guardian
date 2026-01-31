@@ -16,7 +16,7 @@ Output: Only ACTUAL_FAILURE + HIGH_RISK_SIGHTING are included in simulatable.jso
 
 Usage:
     python process_faa_data.py
-    python process_faa_data.py --input data/raw/faa --output data/processed/faa_incidents
+    python process_faa_data.py --input data/raw/faa --output data/processed/faa_reports
     python process_faa_data.py --exclude-high-risk
 """
 
@@ -65,7 +65,7 @@ class FAAConfig:
         verbose: Enable debug logging.
     """
     raw_data_dir: Path = field(default_factory=lambda: Path("data/raw/faa"))
-    output_dir: Path = field(default_factory=lambda: Path("data/processed/faa_incidents"))
+    output_dir: Path = field(default_factory=lambda: Path("data/processed/faa_reports"))
     include_high_risk: bool = True
     verbose: bool = False
 
@@ -608,7 +608,7 @@ class FAAProcessor:
             "incidents": incidents,
         }
         
-        full_path = self.config.output_dir / "faa_incidents.json"
+        full_path = self.config.output_dir / "faa_reports.json"
         with open(full_path, 'w', encoding='utf-8') as f:
             json.dump(full_output, f, indent=2, ensure_ascii=False)
         logger.info(f"✓ Saved: {full_path} ({len(incidents)} incidents)")
@@ -694,8 +694,8 @@ Examples:
     parser.add_argument(
         "--output", "-o",
         type=Path,
-        default=Path("data/processed/faa_incidents"),
-        help="Output directory for JSON files (default: data/processed/faa_incidents)",
+        default=Path("data/processed/faa_reports"),
+        help="Output directory for JSON files (default: data/processed/faa_reports)",
     )
     parser.add_argument(
         "--exclude-high-risk",
