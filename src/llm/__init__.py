@@ -48,6 +48,12 @@ from .report_generator import (
     get_report_generator,
 )
 
+from .llm_logger import (
+    LLMInteractionLogger,
+    get_dspy_history,
+    clear_dspy_history,
+)
+
 __all__ = [
     # Main entry point (recommended)
     "LLMClient",
@@ -71,4 +77,9 @@ __all__ = [
     "SafetyReport",
     "ReportGenerationError",
     "get_report_generator",
+    
+    # LLM Logging
+    "LLMInteractionLogger",
+    "get_dspy_history",
+    "clear_dspy_history",
 ]

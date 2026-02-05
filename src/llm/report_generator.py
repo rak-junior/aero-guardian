@@ -22,6 +22,7 @@ from dataclasses import dataclass, asdict
 import dspy
 
 from .signatures import GeneratePreFlightReport
+from .llm_logger import LLMInteractionLogger, get_dspy_history, clear_dspy_history
 
 logger = logging.getLogger("AeroGuardian.ReportGenerator")
 
@@ -38,7 +39,7 @@ class ReportGenerationError(Exception):
 class SafetyReport:
     """Pre-flight safety report - all values from LLM."""
     
-    incident_id: str
+    report_id: str
     incident_location: str
     fault_type: str
     expected_outcome: str
@@ -84,9 +85,12 @@ class ReportGenerator:
         )
     """
     
-    def __init__(self):
+    def __init__(self, output_dir: Optional[str] = None):
+        """Initialize report generator with optional output logging."""
         self.is_ready = False
         self._generator = None
+        self._output_dir = output_dir
+        self._llm_logger: Optional[LLMInteractionLogger] = None
         self._configure()
     
     def _configure(self):
@@ -101,14 +105,14 @@ class ReportGenerator:
             # Handle reasoning models (gpt-5, o1, etc.)
             is_reasoning_model = any(x in model.lower() for x in ["gpt-5", "o1-", "o3-"])
             
-            lm = dspy.LM(
+            self.lm = dspy.LM(
                 model=f"openai/{model}",
                 api_key=api_key,
                 max_tokens=16000 if is_reasoning_model else 4096,
                 temperature=1.0 if is_reasoning_model else 0.1,
             )
             
-            dspy.configure(lm=lm)
+            # Use local context instead of global dspy.configure
             self._generator = dspy.ChainOfThought(GeneratePreFlightReport)
             
             # Load few-shot examples
@@ -130,7 +134,7 @@ class ReportGenerator:
     def generate(
         self,
         incident_description: str,
-        incident_id: str,
+        report_id: str,
         incident_location: str,
         fault_type: str,
         expected_outcome: str,
@@ -141,7 +145,7 @@ class ReportGenerator:
         
         Args:
             incident_description: Original FAA incident narrative
-            incident_id: FAA incident ID
+            report_id: FAA report ID
             incident_location: City, State
             fault_type: MOTOR_FAILURE, GPS_LOSS, etc.
             expected_outcome: crash, controlled_landing, flyaway
@@ -159,23 +163,49 @@ class ReportGenerator:
         if not incident_description:
             raise ReportGenerationError("incident_description required")
         
-        logger.info(f"Generating safety report: {incident_id}")
+        logger.info(f"Generating safety report: {report_id}")
+        
+        # Initialize LLM logger for this request
+        if self._output_dir:
+            from pathlib import Path
+            self._llm_logger = LLMInteractionLogger(
+                output_dir=Path(self._output_dir),
+                phase=2,
+                report_id=report_id
+            )
         
         try:
-            result = self._generator(
-                incident_description=incident_description,
-                incident_location=incident_location,
-                fault_type=fault_type,
-                expected_outcome=expected_outcome,
-                telemetry_summary=telemetry_summary,
-            )
+            # Log request start
+            input_fields = {
+                "incident_description": incident_description,
+                "incident_location": incident_location,
+                "fault_type": fault_type,
+                "expected_outcome": expected_outcome,
+                "telemetry_summary": telemetry_summary,
+            }
+            if self._llm_logger:
+                clear_dspy_history(self.lm)  # Clear previous history
+                self._llm_logger.log_request_start("GeneratePreFlightReport", input_fields)
+            
+            with dspy.context(lm=self.lm):
+                result = self._generator(
+                    incident_description=incident_description,
+                    incident_location=incident_location,
+                    fault_type=fault_type,
+                    expected_outcome=expected_outcome,
+                    telemetry_summary=telemetry_summary,
+                )
+            
+            # Log response with DSPy history
+            if self._llm_logger:
+                self._llm_logger.log_response(result, get_dspy_history(self.lm))
             
             # Parse constraints and recommendations
             constraints = [c.strip() for c in str(result.design_constraints).split("|") if c.strip()]
             recommendations = [r.strip() for r in str(result.recommendations).split("|") if r.strip()]
             
             report = SafetyReport(
-                incident_id=incident_id,
+                report_id=report_id,
                 incident_location=incident_location,
                 fault_type=fault_type,
                 expected_outcome=expected_outcome,

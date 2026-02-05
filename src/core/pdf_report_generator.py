@@ -185,10 +185,14 @@ class PDFGenerator:
             # story.append(self._separator())
             
             # =================================================================
-            # SECTION 1: SAFETY LEVEL & CAUSE
+            # SECTION 1: SAFETY LEVEL & ROOT CAUSE
             # =================================================================
+            # Extract causal analysis for Section 1
+            evaluation = report_data.get("evaluation", {})
+            causal_analysis = evaluation.get("causal_analysis", {})
+            
             story.append(Paragraph(
-                f"<font color='{risk_color.hexval()}'>1. SAFETY LEVEL & CAUSE</font>",
+                f"<font color='{risk_color.hexval()}'>1. SAFETY LEVEL & ROOT CAUSE</font>",
                 self.styles['Doc3Section']
             ))
             story.append(Paragraph(
@@ -199,6 +203,25 @@ class PDFGenerator:
                 f"<b>Pre-Flight Decision:</b> <font color='{verdict_color.hexval()}' size='12'><b>{verdict}</b></font>",
                 self.styles['Doc3Body']
             ))
+            
+            # Root Cause Subsystem (from causal analysis - the corrected diagnosis)
+            if causal_analysis:
+                primary_subsystem = causal_analysis.get("primary_failure_subsystem", "undetermined")
+                confidence = causal_analysis.get("confidence", 0)
+                causal_chain = causal_analysis.get("causal_chain", [])
+                
+                story.append(Paragraph(
+                    f"<b>Root Cause Subsystem:</b> {primary_subsystem.upper()} (confidence: {confidence:.0%})",
+                    self.styles['Doc3Body']
+                ))
+                
+                if causal_chain and len(causal_chain) > 1:
+                    chain_str = " -> ".join(causal_chain)
+                    story.append(Paragraph(
+                        f"<b>Causal Chain:</b> {chain_str}",
+                        self.styles['Doc3Body']
+                    ))
+            
             story.append(Paragraph(
                 f"<b>Primary Hazard:</b> {section_1.get('primary_hazard', 'Unknown')}", 
                 self.styles['Doc3Body']
@@ -241,45 +264,6 @@ class PDFGenerator:
             explanation = section_3.get("reasoning", "")
             if explanation:
                 story.append(Paragraph(f"{explanation}", self.styles['Doc3Body']))
-            
-            story.append(self._separator())
-            
-            # =================================================================
-            # FINAL VERDICT
-            # =================================================================
-            # verdict = verdict_data.get("decision", verdict_data.get("go_nogo", "REVIEW"))
-            # if isinstance(verdict, dict):
-            #     verdict = verdict.get("decision", "REVIEW")
-            # verdict_color = colors.red if "NO-GO" in verdict.upper() else (colors.orange if "CAUTION" in verdict.upper() else colors.green)
-            
-            # story.append(Paragraph("VERDICT", self.styles['Doc3Section']))
-            # story.append(Paragraph(
-            #     f"<b>Pre-Flight Decision:</b> <font color='{verdict_color.hexval()}' size='14'><b>{verdict}</b></font>",
-            #     self.styles['Doc3Body']
-            # ))
-            
-            # story.append(self._separator())
-            
-            # =================================================================
-            # SUPPORTING DATA SUMMARY
-            # =================================================================
-            story.append(Paragraph("SUPPORTING DATA", self.styles['Doc3Section']))
-            
-            sim_config = supporting_data.get("simulation_config", {})
-            telemetry_sum = supporting_data.get("telemetry_summary", {})
-            
-            story.append(Paragraph(
-                f"<b>Simulation:</b> {sim_config.get('waypoints_count', 0)} waypoints, "
-                f"Fault: {sim_config.get('fault_type', 'None')}, "
-                f"Alt: {sim_config.get('altitude_m', 0):.0f}m",
-                self.styles['Doc3Body']
-            ))
-            story.append(Paragraph(
-                f"<b>Telemetry:</b> {telemetry_sum.get('data_points', 0)} data points, "
-                f"Duration: {telemetry_sum.get('duration_sec', 0):.0f}s, "
-                f"Max Alt: {telemetry_sum.get('max_altitude_m', 0):.1f}m",
-                self.styles['Doc3Body']
-            ))
             
             story.append(self._separator())
             

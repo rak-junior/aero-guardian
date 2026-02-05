@@ -54,6 +54,33 @@ from .config import (
     get_config,
 )
 
+# Safety Guardrails (Optional - may not be installed)
+try:
+    from .guardrails import (
+        GuardrailSystem,
+        GuardrailViolation,
+        ProvenanceTracker,
+        ConfidenceCeiling,
+        AircraftClassValidator,
+        AircraftClass,
+        SimulationEnvelopeDisclosure,
+        ProvenanceError,
+        AircraftMismatchError,
+    )
+    HAS_GUARDRAILS = True
+except ImportError:
+    HAS_GUARDRAILS = False
+    # Define stubs for optional guardrails
+    GuardrailSystem = None
+    GuardrailViolation = None
+    ProvenanceTracker = None
+    ConfidenceCeiling = None
+    AircraftClassValidator = None
+    AircraftClass = None
+    SimulationEnvelopeDisclosure = None
+    ProvenanceError = None
+    AircraftMismatchError = None
+
 __all__ = [
     # Logging
     "get_logger",
@@ -77,4 +104,15 @@ __all__ = [
     # Configuration
     "Config",
     "get_config",
+    
+    # Safety Guardrails
+    "GuardrailSystem",
+    "GuardrailViolation",
+    "ProvenanceTracker",
+    "ConfidenceCeiling",
+    "AircraftClassValidator",
+    "AircraftClass",
+    "SimulationEnvelopeDisclosure",
+    "ProvenanceError",
+    "AircraftMismatchError",
 ]

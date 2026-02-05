@@ -3,26 +3,51 @@ Executable Safety Reliability Index (ESRI)
 ==========================================
 Author: AeroGuardian Member
 Date: 2026-01-21
+Updated: 2026-02-01
 
-Single end-to-end trust score combining all evaluation metrics.
+Single end-to-end INTERNAL CONSISTENCY score combining all evaluation metrics.
+
+DISCLAIMER:
+-----------
+ESRI measures INTERNAL CONSISTENCY, NOT external validation or safety certification.
+A high ESRI means pipeline components agree with each other, not that the output is "safe".
+ESRI cannot detect: LLM hallucinations, simulation physics errors, or FAA report inaccuracies.
 
 FORMULA:
 --------
 ESRI = SFS × BRR × ECC
 
+Where:
+- SFS (Scenario Fidelity Score): Measures LLM translation consistency [0-1]
+- BRR (Behavior Reproduction Rate): Measures simulation reproduction consistency [0-1]
+- ECC (Evidence-Conclusion Consistency): Measures claim-evidence alignment [0-1]
+
 SCIENTIFIC RATIONALE:
 ---------------------
-Using multiplication ensures that weakness in ANY stage propagates to the final score.
-A system cannot be trusted if:
-- The LLM mistranslates the FAA report (low SFS)
-- The simulation fails to reproduce behavior (low BRR)
-- The report is not grounded in evidence (low ECC)
+Using multiplication (product) rather than averaging ensures that weakness in ANY
+stage propagates to the final score. This aligns with fault propagation principles
+where a single inconsistency compromises the overall pipeline coherence:
 
-TRUST LEVELS:
--------------
-- ESRI >= 0.7: HIGH TRUST - System is reliable
-- ESRI >= 0.4: MEDIUM TRUST - Review recommended
-- ESRI < 0.4: LOW TRUST - Do not rely on output
+  - Defense-in-depth: Each stage must pass independently
+  - Multiplicative penalty: 0.9 × 0.9 × 0.5 = 0.405 (correctly identifies weak ECC)
+  - Zero propagation: Any component at 0 yields ESRI = 0
+
+Low ESRI indicates pipeline inconsistency:
+- The LLM translation may not align with FAA report (low SFS)
+- The simulation may not match expected behavior (low BRR)
+- The report claims may not align with telemetry (low ECC)
+
+CONSISTENCY LEVELS:
+-------------------
+- ESRI >= 0.7: HIGH CONSISTENCY - Pipeline stages align well
+- ESRI >= 0.4: MEDIUM CONSISTENCY - Some disagreement, review recommended
+- ESRI < 0.4: LOW CONSISTENCY - Significant pipeline disagreement
+
+NOTE ON REGULATORY REFERENCES:
+------------------------------
+The multiplicative structure is inspired by risk assessment frameworks (e.g., severity × probability).
+However, ESRI is NOT a regulatory metric and has not been validated by any aviation authority.
+Do not cite ESRI as evidence of regulatory compliance.
 """
 
 import logging
@@ -45,9 +70,9 @@ class ESRIResult:
     # Final score
     esri: float = 0.0
     
-    # Trust assessment
-    trust_level: str = "LOW"  # HIGH, MEDIUM, LOW
-    trust_justification: str = ""
+    # Consistency assessment (NOT safety validation)
+    consistency_level: str = "LOW"  # HIGH, MEDIUM, LOW
+    consistency_justification: str = ""
     
     # Detailed breakdowns
     sfs_details: Dict = field(default_factory=dict)
@@ -66,8 +91,8 @@ class ESRIResult:
                 "BRR": round(self.brr, 3),
                 "ECC": round(self.ecc, 3),
             },
-            "trust_level": self.trust_level,
-            "trust_justification": self.trust_justification,
+            "consistency_level": self.consistency_level,
+            "consistency_justification": self.consistency_justification,
             "details": {
                 "scenario_fidelity": self.sfs_details,
                 "behavior_reproduction": self.brr_details,
@@ -82,11 +107,11 @@ class ESRIResult:
     def to_summary(self) -> str:
         """Generate human-readable summary with percentages."""
         return (
-            f"ESRI: {self.esri * 100:.1f}% ({self.trust_level} TRUST)\n"
+            f"ESRI: {self.esri * 100:.1f}% ({self.consistency_level} CONSISTENCY)\n"
             f"├─ SFS (Scenario Fidelity): {self.sfs * 100:.1f}%\n"
             f"├─ BRR (Behavior Reproduction): {self.brr * 100:.1f}%\n"
             f"└─ ECC (Evidence Consistency): {self.ecc * 100:.1f}%\n"
-            f"\nJustification: {self.trust_justification}"
+            f"\nJustification: {self.consistency_justification}"
         )
 
 
@@ -94,12 +119,13 @@ class ESRICalculator:
     """
     Computes Executable Safety Reliability Index (ESRI).
     
-    Aggregates SFS, BRR, and ECC into a single trust score.
+    Aggregates SFS, BRR, and ECC into a single CONSISTENCY score.
+    NOTE: This measures internal pipeline consistency, NOT safety validation.
     """
     
-    # Trust level thresholds
-    HIGH_TRUST_THRESHOLD = 0.7
-    MEDIUM_TRUST_THRESHOLD = 0.4
+    # Consistency level thresholds
+    HIGH_CONSISTENCY_THRESHOLD = 0.7
+    MEDIUM_CONSISTENCY_THRESHOLD = 0.4
     
     def __init__(self):
         logger.debug("ESRICalculator initialized")
@@ -121,7 +147,7 @@ class ESRICalculator:
             incident_id: Optional incident identifier
             
         Returns:
-            ESRIResult with final score and trust assessment
+            ESRIResult with final score and consistency assessment
         """
         result = ESRIResult()
         result.incident_id = incident_id
@@ -140,61 +166,61 @@ class ESRICalculator:
         # Calculate ESRI = SFS × BRR × ECC
         result.esri = result.sfs * result.brr * result.ecc
         
-        # Determine trust level
-        result.trust_level, result.trust_justification = self._assess_trust(
+        # Determine consistency level
+        result.consistency_level, result.consistency_justification = self._assess_consistency(
             result.sfs, result.brr, result.ecc, result.esri
         )
         
         logger.info(
             f"ESRI calculated: {result.esri * 100:.1f}% = "
             f"{result.sfs * 100:.0f}% × {result.brr * 100:.0f}% × {result.ecc * 100:.0f}% "
-            f"({result.trust_level} TRUST)"
+            f"({result.consistency_level} CONSISTENCY)"
         )
         
         return result
     
-    def _assess_trust(
+    def _assess_consistency(
         self,
         sfs: float,
         brr: float,
         ecc: float,
         esri: float
     ) -> tuple:
-        """Assess trust level and generate justification."""
+        """Assess consistency level and generate justification."""
         
         weakest = min(sfs, brr, ecc)
         weakest_name = "SFS" if sfs == weakest else ("BRR" if brr == weakest else "ECC")
         
-        if esri >= self.HIGH_TRUST_THRESHOLD:
+        if esri >= self.HIGH_CONSISTENCY_THRESHOLD:
             return "HIGH", (
-                f"All components strong. ESRI {esri:.3f} exceeds threshold {self.HIGH_TRUST_THRESHOLD}. "
-                f"System output is reliable for this incident."
+                f"All components align. ESRI {esri:.3f} exceeds threshold {self.HIGH_CONSISTENCY_THRESHOLD}. "
+                f"Pipeline stages are consistent for this scenario."
             )
-        elif esri >= self.MEDIUM_TRUST_THRESHOLD:
+        elif esri >= self.MEDIUM_CONSISTENCY_THRESHOLD:
             return "MEDIUM", (
-                f"ESRI {esri:.3f} is acceptable but {weakest_name} ({weakest:.3f}) is weak. "
-                f"Manual review recommended before acting on output."
+                f"ESRI {esri:.3f} is acceptable but {weakest_name} ({weakest:.3f}) shows disagreement. "
+                f"Manual review recommended."
             )
         else:
-            # Identify the bottleneck
+            # Identify the inconsistency
             if sfs < 0.4:
-                bottleneck = "LLM translation of FAA report may be inaccurate"
+                bottleneck = "LLM translation may not align with FAA report"
             elif brr < 0.4:
-                bottleneck = "Simulation did not reproduce expected abnormal behavior"
+                bottleneck = "Simulation did not match expected scenario behavior"
             elif ecc < 0.4:
-                bottleneck = "Safety report claims are not well-supported by telemetry"
+                bottleneck = "Report claims do not align with telemetry evidence"
             else:
-                bottleneck = "Multiple weak components"
+                bottleneck = "Multiple stages show disagreement"
             
             return "LOW", (
                 f"ESRI {esri:.3f} is below minimum threshold. "
-                f"Bottleneck: {bottleneck}. "
-                f"System output should NOT be trusted for this incident."
+                f"Issue: {bottleneck}. "
+                f"Pipeline has significant inconsistencies for this scenario."
             )
     
     def calculate_aggregate(self, individual_results: list) -> Dict:
         """
-        Calculate aggregate ESRI across multiple incidents.
+        Calculate aggregate ESRI across multiple scenarios.
         
         Args:
             individual_results: List of ESRIResult dicts
@@ -206,7 +232,7 @@ class ESRICalculator:
             return {
                 "aggregate_ESRI": 0.0,
                 "count": 0,
-                "trust_distribution": {},
+                "consistency_distribution": {},
             }
         
         esri_scores = [r.get("ESRI", 0) for r in individual_results]
@@ -214,29 +240,39 @@ class ESRICalculator:
         brr_scores = [r.get("component_scores", {}).get("BRR", 0) for r in individual_results]
         ecc_scores = [r.get("component_scores", {}).get("ECC", 0) for r in individual_results]
         
-        trust_counts = {
-            "HIGH": sum(1 for r in individual_results if r.get("trust_level") == "HIGH"),
-            "MEDIUM": sum(1 for r in individual_results if r.get("trust_level") == "MEDIUM"),
-            "LOW": sum(1 for r in individual_results if r.get("trust_level") == "LOW"),
+        consistency_counts = {
+            "HIGH": sum(1 for r in individual_results if r.get("consistency_level") == "HIGH"),
+            "MEDIUM": sum(1 for r in individual_results if r.get("consistency_level") == "MEDIUM"),
+            "LOW": sum(1 for r in individual_results if r.get("consistency_level") == "LOW"),
         }
         
         def avg(arr):
             return sum(arr) / len(arr) if arr else 0.0
         
+        def std(arr):
+            """Compute population standard deviation."""
+            if not arr or len(arr) < 2:
+                return 0.0
+            mean = avg(arr)
+            variance = sum((x - mean) ** 2 for x in arr) / len(arr)
+            return variance ** 0.5
+        
         return {
             "aggregate_ESRI": {
                 "mean": round(avg(esri_scores), 4),
+                "std": round(std(esri_scores), 4),
                 "min": round(min(esri_scores), 4),
                 "max": round(max(esri_scores), 4),
             },
             "component_averages": {
-                "SFS": round(avg(sfs_scores), 3),
-                "BRR": round(avg(brr_scores), 3),
-                "ECC": round(avg(ecc_scores), 3),
+                "SFS": {"mean": round(avg(sfs_scores), 3), "std": round(std(sfs_scores), 3)},
+                "BRR": {"mean": round(avg(brr_scores), 3), "std": round(std(brr_scores), 3)},
+                "ECC": {"mean": round(avg(ecc_scores), 3), "std": round(std(ecc_scores), 3)},
             },
             "count": len(individual_results),
-            "trust_distribution": trust_counts,
-            "reliability_rate": round(
-                (trust_counts["HIGH"] + trust_counts["MEDIUM"]) / len(individual_results), 3
+            "consistency_distribution": consistency_counts,
+            "high_consistency_rate": round(
+                (consistency_counts["HIGH"] + consistency_counts["MEDIUM"]) / len(individual_results), 3
             ) if individual_results else 0.0,
         }
+

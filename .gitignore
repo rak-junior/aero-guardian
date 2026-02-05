@@ -122,3 +122,10 @@ telemetry/
 *.bak
 *.temp
 *.cache
+
+# TASKS
+tasks/
+
+# BIG DATASETS
+data/raw/alfa/
+data/raw/rflymad/

@@ -1,6 +1,7 @@
 """
-AeroGuardian Demo UI
+AeroGuardian Mission Control
 ====================================
+Streamlined Pre-flight Safety Analysis
 """
 
 import streamlit as st
@@ -9,464 +10,383 @@ import json
 import sys
 import os
 from pathlib import Path
-from datetime import datetime
 
 # Setup paths
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # Page config
-st.set_page_config(page_title="AeroGuardian", page_icon="🛡️", layout="wide")
+st.set_page_config(
+    page_title="AeroGuardian", 
+    page_icon="🛡️", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# Clean CSS matching the mockup
+# =============================================================================
+# Clean CSS Theme
+# =============================================================================
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
 
-* { 
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important; 
+/* Apply font to text elements only, avoiding icon font breakage */
+html, body, [class*="css"], font, span, div, p, h1, h2, h3, h4, h5, h6 {
+    font-family: 'Outfit', sans-serif;
 }
 
-.stApp { 
-    background: #FFFFFF; 
-}
-
-#MainMenu, footer, header { visibility: hidden; }
-
-.block-container { 
-    padding: 2rem 3rem; 
-    max-width: 1200px; 
-}
-
-/* Section styling */
-.section {
-    background: #FFFFFF;
-    border: 1px solid #E5E7EB;
-    border-radius: 12px;
-    padding: 24px;
-    margin-bottom: 24px;
-}
-
-.section-title {
-    font-size: 16px;
-    font-weight: 600;
-    color: #1F2937;
-    margin-bottom: 16px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.section-icon {
-    color: #0EA5E9;
-}
-
-/* File uploader */
-.stFileUploader {
-    background: #FAFAFA;
-    border: 2px dashed #D1D5DB;
-    border-radius: 8px;
-    padding: 20px;
-}
-
-.stFileUploader:hover {
-    border-color: #0EA5E9;
-    background: #F0F9FF;
-}
-
-/* Button styling - Sky blue theme */
-.stButton > button {
-    background: #0EA5E9;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 8px 16px;
-    font-weight: 500;
-    font-size: 13px;
-}
-
-.stButton > button:hover {
-    background: #0284C7;
-}
-
-/* Download buttons */
-.stDownloadButton > button {
-    background: #0EA5E9;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    font-weight: 500;
-    font-size: 13px;
-}
-
-.stDownloadButton > button:hover {
-    background: #0284C7;
-}
-
-/* Dataframe styling */
-.stDataFrame {
-    border: 1px solid #E5E7EB;
-    border-radius: 8px;
-}
-
-/* Log area */
-.log-container {
-    background: #FAFAFA;
-    border: 1px solid #E5E7EB;
-    border-radius: 8px;
-    padding: 16px;
-    font-family: Monaco, 'Courier New', monospace;
+/* Status Badges */
+.status-badge {
+    padding: 4px 8px;
+    border-radius: 4px;
     font-size: 12px;
-    line-height: 1.8;
-    max-height: 250px;
-    overflow-y: auto;
+    font-weight: 600;
 }
+.status-success { background: #Dcfce7; color: #166534; }
+.status-error { background: #Fee2e2; color: #991b1b; }
 
-.log-info { color: #6B7280; }
-.log-success { color: #059669; }
-.log-warning { color: #D97706; }
-.log-error { color: #DC2626; }
-
-/* Progress */
-.stProgress > div > div {
-    background: #0EA5E9;
+/* Steps */
+.step-header {
+    font-size: 18px;
+    font-weight: 600;
+    margin-top: 20px;
+    margin-bottom: 10px;
+    color: #1e293b;
+    border-bottom: 2px solid #e2e8f0;
+    padding-bottom: 5px;
 }
 </style>
 """, unsafe_allow_html=True)
-
 
 # =============================================================================
 # Session State
 # =============================================================================
 
-def init_state():
-    defaults = {
-        "logs": [],
-        "reports": [],
-        "output_paths": [],
-        "all_records": [],
-        "current_idx": 0,
-        "total_records": 0,
-        "processing": False,
-        "done": False,
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-
-init_state()
-
-
-def add_log(msg: str, level: str = "info"):
-    ts = datetime.now().strftime("%H:%M:%S")
-    st.session_state.logs.append({"t": ts, "m": msg, "l": level})
-
+if "all_records" not in st.session_state: st.session_state.all_records = None
+if "processing" not in st.session_state: st.session_state.processing = False
+if "pipeline_results" not in st.session_state: st.session_state.pipeline_results = None
 
 def parse_file(uploaded):
-    """Parse uploaded file - supports single object, arrays, nested structures.
-    Returns only the FIRST record for demo purposes.
-    """
+    """Parse file 1MB limit check handled by UI logic implicitly or uploader param."""
+    if uploaded.size > 1 * 1024 * 1024:
+        st.error("File size exceeds 1MB limit.")
+        return None
+        
     ext = Path(uploaded.name).suffix.lower()
-    records = []
-    
-    if ext == ".csv":
-        records = pd.read_csv(uploaded).to_dict(orient="records")
-    elif ext == ".xlsx":
-        records = pd.read_excel(uploaded).to_dict(orient="records")
-    elif ext == ".json":
-        data = json.load(uploaded)
-        # Handle all formats: single object, array, nested
-        if isinstance(data, list):
-            records = data
-        elif isinstance(data, dict):
-            for key in ["incidents", "data", "records", "items", "results"]:
-                if key in data and isinstance(data[key], list):
-                    records = data[key]
-                    break
-            else:
-                # Single object
-                records = [data]
-    
-    # Return only first record for demo (but we parsed flexibly)
-    if records:
-        return records[0], len(records)  # Return first record + total count
-    return None, 0
-
-
-
-# =============================================================================
-# Header
-# =============================================================================
-
-st.markdown("""
-<div style="display: flex; align-items: center; gap: 12px; margin-bottom: 32px; padding-bottom: 16px; border-bottom: 1px solid #E5E7EB;">
-    <div style="
-        width: 40px;
-        height: 40px;
-        background: linear-gradient(135deg, #0EA5E9 0%, #06B6D4 100%);
-        border-radius: 10px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 20px;
-    ">🛡️</div>
-    <div>
-        <h1 style="margin: 0; font-size: 22px; font-weight: 600; color: #1F2937;">AeroGuardian</h1>
-        <p style="margin: 0; font-size: 13px; color: #6B7280;">Pre-flight Safety Analysis</p>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-
-# =============================================================================
-# Upload Flight Data Section
-# =============================================================================
-
-st.markdown("""
-<div class="section-title">
-    <span class="section-icon">📤</span> Upload Flight Data
-</div>
-""", unsafe_allow_html=True)
-
-upload_col1, upload_col2 = st.columns([3, 1])
-
-with upload_col1:
-    uploaded = st.file_uploader(
-        "Drag and drop files here or click to browse (CSV, JSON, XLSX)",
-        type=["json", "csv", "xlsx"],
-        label_visibility="collapsed"
-    )
-
-with upload_col2:
-    if uploaded:
-        uploaded.seek(0)
-        record, total_count = parse_file(uploaded)
-        if record:
-            st.session_state.all_records = record  # Single record dict
-            st.session_state.total_records = 1
-            st.session_state.original_count = total_count
-
-if st.session_state.total_records > 0:
-    if st.session_state.get('original_count', 1) > 1:
-        st.markdown(f"<div style='color: #D97706; font-size: 13px; margin-top: 8px;'>⚠️ {st.session_state.original_count} records found - using first record only</div>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<div style='color: #059669; font-size: 13px; margin-top: 8px;'>✓ 1 record loaded</div>", unsafe_allow_html=True)
-
-st.markdown("<div style='height: 24px'></div>", unsafe_allow_html=True)
-
-
-# =============================================================================
-# Data Preview Section
-# =============================================================================
-
-st.markdown("""
-<div class="section-title">
-    <span class="section-icon">📊</span> Data Preview
-</div>
-""", unsafe_allow_html=True)
-
-if st.session_state.all_records:
-    # Single record - convert to DataFrame with one row
-    record = st.session_state.all_records
-    df = pd.DataFrame([record])
-    display_cols = [c for c in ["incident_id", "city", "state", "incident_type"] if c in df.columns]
-    st.dataframe(df[display_cols], use_container_width=True, height=100)
-else:
-    st.markdown("""
-    <div style="
-        background: #FAFAFA;
-        border: 1px solid #E5E7EB;
-        border-radius: 8px;
-        padding: 40px;
-        text-align: center;
-        color: #9CA3AF;
-    ">
-        No data loaded. Upload a file to preview.
-    </div>
-    """, unsafe_allow_html=True)
-
-st.markdown("<div style='height: 24px'></div>", unsafe_allow_html=True)
-
-
-# =============================================================================
-# Analysis Log Section
-# =============================================================================
-
-st.markdown("""
-<div class="section-title">
-    <span class="section-icon">📋</span> Analysis Log
-</div>
-""", unsafe_allow_html=True)
-
-# Progress bar
-if st.session_state.processing or st.session_state.done:
-    progress = st.session_state.current_idx / st.session_state.total_records if st.session_state.total_records > 0 else 0
-    st.progress(progress)
-    st.markdown(f"<div style='font-size: 12px; color: #6B7280; margin-bottom: 12px;'>Progress: {st.session_state.current_idx}/{st.session_state.total_records} records</div>", unsafe_allow_html=True)
-
-# Log display
-if st.session_state.logs:
-    log_html = '<div class="log-container">'
-    for e in st.session_state.logs[-50:]:
-        level_class = f"log-{e.get('l', 'info')}"
-        prefix = {"info": "Info", "success": "✓", "warning": "Warning", "error": "Error"}.get(e.get('l'), "Info")
-        log_html += f'<div class="{level_class}"><span style="color: #9CA3AF;">{e.get("t", "")}</span>  {prefix}  {e.get("m", "")}</div>'
-    log_html += '</div>'
-    st.markdown(log_html, unsafe_allow_html=True)
-else:
-    st.markdown("""
-    <div class="log-container" style="text-align: center; color: #9CA3AF; padding: 60px;">
-        Analysis logs will appear here...
-    </div>
-    """, unsafe_allow_html=True)
-
-st.markdown("<div style='height: 24px'></div>", unsafe_allow_html=True)
-
-
-# =============================================================================
-# Download Reports Section
-# =============================================================================
-
-st.markdown("""
-<div class="section-title">
-    <span class="section-icon">📥</span> Download Reports
-</div>
-""", unsafe_allow_html=True)
-
-btn_col1, btn_col2, btn_col3, btn_col4 = st.columns([1.2, 1.2, 1, 2])
-
-with btn_col1:
-    # Start Analysis button
-    if st.session_state.total_records > 0 and not st.session_state.processing and not st.session_state.done:
-        if st.button("🚀 Start Analysis", type="primary", use_container_width=True):
-            st.session_state.processing = True
-            st.session_state.current_idx = 0
-            st.session_state.reports = []
-            st.session_state.output_paths = []
-            st.session_state.logs = []
-            st.session_state.done = False
-            add_log("Application started.", "info")
-            add_log(f"Uploaded flight data ({st.session_state.total_records} records)", "info")
-            add_log("Starting pre-flight analysis...", "info")
-            st.rerun()
-    elif st.session_state.processing:
-        st.info("⏳ Processing...")
-    elif st.session_state.done:
-        st.success("✅ Complete")
-
-with btn_col2:
-    # PDF Download
-    if st.session_state.reports:
-        pdf_paths = [r.get("pdf_path") for r in st.session_state.reports if r.get("pdf_path") and os.path.exists(str(r.get("pdf_path", "")))]
-        if pdf_paths and len(pdf_paths) == 1:
-            with open(pdf_paths[0], "rb") as f:
-                st.download_button("� Download PDF Report", f.read(), "report.pdf", "application/pdf", use_container_width=True)
-        elif pdf_paths:
-            st.download_button("� Download PDF Report", "Multiple PDFs available", "info.txt", disabled=True, use_container_width=True)
-        else:
-            st.button("📄 Download PDF Report", disabled=True, use_container_width=True)
-    else:
-        st.button("📄 Download PDF Report", disabled=True, use_container_width=True)
-
-with btn_col3:
-    # JSON Download
-    if st.session_state.reports:
-        count = len(st.session_state.reports)
-        if count == 1:
-            json_data = json.dumps(st.session_state.reports[0].get("report", {}), indent=2, default=str)
-        else:
-            json_data = json.dumps({
-                "reports": [r.get("report", {}) for r in st.session_state.reports],
-                "total": count
-            }, indent=2, default=str)
-        st.download_button("📊 Download JSON Report", json_data, "report.json", "application/json", use_container_width=True)
-    else:
-        st.button("📊 Download JSON Report", disabled=True, use_container_width=True)
-
-with btn_col4:
-    # Output folder info
-    if st.session_state.output_paths:
-        st.markdown(f"<div style='font-size: 11px; color: #6B7280; padding-top: 8px;'>📁 {st.session_state.output_paths[-1]}</div>", unsafe_allow_html=True)
-
-
-# =============================================================================
-# Full Pipeline Processing
-# =============================================================================
-
-def run_full_pipeline():
-    """Run the REAL AutomatedPipeline for the single record."""
-    from scripts.run_automated_pipeline import AutomatedPipeline, PipelineConfig
-    
-    record = st.session_state.all_records  # Single record dict
-    
-    incident_id = record.get("incident_id", "Upload_1")
-    city = record.get("city", "Unknown")
-    state = record.get("state", "")
-    
-    add_log(f"Analyzing: {incident_id}", "info")
-    add_log(f"Location: {city}, {state}", "info")
-    
-    # Prepare incident
-    incident = {
-        "incident_id": incident_id,
-        "date": record.get("date", ""),
-        "city": city,
-        "state": state,
-        "description": record.get("description", record.get("summary", "")),
-        "summary": record.get("summary", record.get("description", "")),
-        "incident_type": record.get("incident_type", "other"),
-    }
-    
+    data = []
     try:
-        config = PipelineConfig(headless=False)
-        pipeline = AutomatedPipeline(config)
-        
-        add_log("Starting PX4 SITL simulation...", "info")
-        add_log("This takes ~7 minutes for full flight", "warning")
-        
-        # Run REAL pipeline
-        paths = pipeline.run_from_incident(
-            incident=incident,
-            skip_px4=False
-        )
-        
-        add_log(f"Analysis complete for {incident_id}", "success")
-        
-        # Load report data
-        report_json = paths.get("json", "")
-        report_data = {}
-        if report_json and os.path.exists(str(report_json)):
-            with open(report_json, "r") as f:
-                report_data = json.load(f)
-        
-        st.session_state.reports.append({
-            "incident_id": incident_id,
-            "report": report_data,
-            "pdf_path": str(paths.get("pdf")) if paths.get("pdf") else None,
-            "output_dir": str(paths.get("report_dir")) if paths.get("report_dir") else None,
-        })
-        
-        if paths.get("report_dir"):
-            st.session_state.output_paths.append(str(paths.get("report_dir")))
-        
+        if ext == ".csv":
+            data = pd.read_csv(uploaded).to_dict(orient="records")
+        elif ext == ".xlsx":
+            data = pd.read_excel(uploaded).to_dict(orient="records")
+        elif ext == ".json":
+            data = json.load(uploaded)
+            # Normalize to list
+            if isinstance(data, dict):
+                for key in ["incidents", "data", "records", "items", "results", "demo_cases", "cases", "scenarios"]:
+                    if key in data and isinstance(data[key], list):
+                        data = data[key]
+                        break
+                else:
+                    data = [data]
+        return data
     except Exception as e:
-        add_log(f"Error: {str(e)[:80]}", "error")
-        import traceback
-        traceback.print_exc()
+        st.error(f"Error parsing file: {e}")
+        return None
+
+# =============================================================================
+# Sidebar: Configuration
+# =============================================================================
+
+with st.sidebar:
+    st.title("🛡️ AeroGuardian")
+    st.markdown("Pre-flight Safety Analysis")
+    st.markdown("---")
     
-    st.session_state.current_idx = 1
-    add_log("Pipeline complete!", "success")
-    st.session_state.processing = False
-    st.session_state.done = True
+    st.markdown("**System Configuration**")
+    wsl_ip = st.text_input("WSL IP Address", value="172.x.x.x", help="Run 'ip addr show eth0' in WSL to get this.")
+    headless = st.toggle("Headless Mode", value=True, help="Run without Gazebo GUI (faster, less resource intensive).")
+    
+    st.markdown("---")
+    st.info("System Ready")
+
+# =============================================================================
+# Main Content
+# =============================================================================
+
+# =============================================================================
+# Main Content
+# =============================================================================
+
+st.markdown("### 1. Input Data")
+
+# Clean vertical stack - no cramped columns
+uploaded_file = st.file_uploader(
+    "Upload Sighting Report (Max 1MB)", 
+    type=["json", "csv", "xlsx"],
+    help="Supported formats: JSON, CSV, Excel. Max size 1MB."
+)
+
+with st.expander("ℹ️  View Required Data Format & Examples"):
+    st.markdown("""
+    <div style="padding: 10px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
+        <p style="margin-top:0; font-weight:600; color:#334155;">Required Fields:</p>
+        <ul style="color:#475569; margin-bottom:15px;">
+            <li><code>report_id</code> or <code>incident_id</code> - Unique identifier</li>
+            <li><code>description</code> or <code>summary</code> - The sighting narrative text</li>
+        </ul>
+        <p style="margin-top:0; font-weight:600; color:#334155;">Optional Fields (Improves Simulation Accuracy):</p>
+        <ul style="color:#64748b; margin-bottom:15px;">
+            <li><code>date</code> - Incident date (YYYY-MM-DD or ISO format)</li>
+            <li><code>city</code> - City name for location-based scenario</li>
+            <li><code>state</code> - State/region for geocoding</li>
+        </ul>
+        <p style="font-weight:600; color:#334155;">Example JSON (FAA Format):</p>
+        <pre style="background:white; padding:10px; border-radius:4px; border:1px solid #cbd5e1; font-size:12px;">
+{
+  "report_id": "FAA_Apr2020-Jun2020_1",
+  "date": "2020-04-01",
+  "city": "MINNEAPOLIS",
+  "state": "MINNESOTA",
+  "description": "UAS sighting reported at 3,300ft..."
+}</pre>
+    </div>
+    """, unsafe_allow_html=True)
 
 
-# Run pipeline if processing
-if st.session_state.processing and not st.session_state.done:
-    with st.spinner("🚁 Running PX4 simulation..."):
-        run_full_pipeline()
-    st.rerun()
+if uploaded_file:
+    records = parse_file(uploaded_file)
+    if records:
+        rec = records[0]  # Take first record
+        st.session_state.all_records = rec
+        
+        # Normalize field names - support both report_id and incident_id
+        report_id = rec.get('report_id', rec.get('incident_id', 'Unknown'))
+        
+        # Field validation
+        required_fields = ['report_id', 'description']
+        optional_fields = ['date', 'city', 'state', 'summary']
+        
+        # Check for description/summary (accept either)
+        has_description = 'description' in rec or 'summary' in rec
+        has_report_id = 'report_id' in rec or 'incident_id' in rec
+        
+        if has_description and has_report_id:
+            st.success(f"✓ Loaded: **{report_id}**")
+            
+            # Show field status
+            found_optional = [f for f in optional_fields if f in rec]
+            if found_optional:
+                st.caption(f"Optional fields found: {', '.join(found_optional)}")
+        else:
+            missing = []
+            if not has_report_id:
+                missing.append('report_id')
+            if not has_description:
+                missing.append('description or summary')
+            st.warning(f"⚠️ Missing required fields: {', '.join(missing)}")
 
+# Step 2: Preview
+if st.session_state.all_records:
+    st.markdown("### 2. Data Preview")
+    df = pd.DataFrame([st.session_state.all_records])
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Step 3: Run Analysis
+    st.markdown("### 3. Execution")
+    
+    # Run Button
+    if st.button("🚀 Start Pipeline Analysis", type="primary", disabled=st.session_state.processing):
+        st.session_state.processing = True
+        st.session_state.pipeline_results = None # Reset previous results
+        
+        with st.status("Running Automated Pipeline...", expanded=True) as status:
+            try:
+                # ---------------------------------------------------------
+                # REAL PIPELINE EXECUTION
+                # ---------------------------------------------------------
+                from scripts.run_automated_pipeline import AutomatedPipeline, PipelineConfig
+                
+                st.write("Initializing Pipeline Config...")
+                config = PipelineConfig(
+                    wsl_ip=wsl_ip,
+                    headless=headless,
+                    output_dir="outputs"
+                )
+                pipeline = AutomatedPipeline(config)
+                
+                st.write("Generating Scenario & Injecting Faults (LLM)...")
+                
+                # Prepare normalized incident dict with fallback field mappings
+                # Supports both FAA format (report_id, description) and 
+                # legacy format (incident_id, summary)
+                rec = st.session_state.all_records
+                report_id = str(rec.get("report_id", rec.get("incident_id", "UI_INPUT")))
+                description_text = str(rec.get("description", rec.get("summary", "")))
+                
+                incident = {
+                    "report_id": report_id,
+                    "date": str(rec.get("date", "")),
+                    "city": str(rec.get("city", "")),
+                    "state": str(rec.get("state", "")),
+                    "description": description_text,
+                    "summary": description_text,  # Provide both for compatibility
+                    "incident_type": str(rec.get("incident_type", "uas_sighting")),
+                }
+                
+                # Execute
+                st.write("Executing PX4 Flight Mission (This may take 2-5 mins)...")
+                paths = pipeline.run_from_incident(incident=incident, skip_px4=False)
+                
+                # Save the original input data for traceability
+                if paths.get("report_dir"):
+                    input_file = Path(paths["report_dir"]) / "input" / "original_input.json"
+                    input_file.parent.mkdir(exist_ok=True)
+                    with open(input_file, "w", encoding="utf-8") as f:
+                        json.dump({
+                            "metadata": {
+                                "source": "UI File Upload",
+                                "uploaded_at": str(pd.Timestamp.now()),
+                            },
+                            "original_record": rec,
+                            "normalized_incident": incident,
+                        }, f, indent=2, default=str)
+                    paths["input_file"] = input_file
+                
+                st.session_state.pipeline_results = paths
+                status.update(label="Analysis Complete!", state="complete", expanded=False)
+                st.success("Pipeline finished successfully.")
+                
+            except Exception as e:
+                status.update(label="Pipeline Failed", state="error", expanded=True)
+                st.error(f"❌ Analysis Failed: {str(e)}")
+                
+                with st.expander("🔍 View Technical Details & Troubleshooting"):
+                    st.info("Possible Causes:\n- WSL is not running or IP is incorrect.\n- PX4/Gazebo failed to launch.\n- OpenAI API key is missing or invalid.")
+                    import traceback
+                    st.code(traceback.format_exc())
+            finally:
+                st.session_state.processing = False
+
+# Step 4: Downloads
+if st.session_state.pipeline_results:
+    st.markdown("### 4. Results & Downloads")
+    
+    paths = st.session_state.pipeline_results
+    
+    # Show output directory path for manual inspection
+    report_dir = paths.get("report_dir")
+    if report_dir:
+        st.info(f"📁 **Output saved to:** `{report_dir}`")
+        st.caption("All files are saved to disk. You can browse this folder to view input, output, reports, and evaluation files.")
+    
+    cols = st.columns(4)
+    
+    # 1. Generated Parameters (Config)
+    with cols[0]:
+        p = paths.get("full_config")
+        if p and os.path.exists(p):
+            with open(p, "rb") as f:
+                st.download_button(
+                    "📥 Generated Params", 
+                    f, 
+                    file_name="simulation_config.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
+        else:
+            st.button("No Config", disabled=True, use_container_width=True)
+
+    # 2. Telemetry Captured
+    with cols[1]:
+        p = paths.get("full_telemetry")
+        if p and os.path.exists(p):
+            with open(p, "rb") as f:
+                st.download_button(
+                    "📥 Telemetry Data", 
+                    f, 
+                    file_name="telemetry_log.json", 
+                    mime="application/json",
+                    use_container_width=True
+                )
+        else:
+            st.button("No Telemetry", disabled=True, use_container_width=True)
+            
+    # 3. Safety Report (PDF)
+    with cols[2]:
+        p = paths.get("pdf")
+        if p and os.path.exists(p):
+            with open(p, "rb") as f:
+                st.download_button(
+                    "📄 Safety Report (PDF)", 
+                    f, 
+                    file_name="safety_report.pdf", 
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+        else:
+            # Fallback to JSON report
+            p_json = paths.get("json")
+            if p_json and os.path.exists(p_json):
+                with open(p_json, "rb") as f:
+                    st.download_button(
+                        "📄 Safety Report (JSON)", 
+                        f, 
+                        file_name="safety_report.json", 
+                        mime="application/json",
+                        use_container_width=True
+                    )
+            else:
+                st.button("No Report", disabled=True, use_container_width=True)
+
+    # 4. Evaluation (Excel)
+    with cols[3]:
+        p = paths.get("evaluation_excel")
+        if p and os.path.exists(p):
+            with open(p, "rb") as f:
+                st.download_button(
+                    "📊 Evaluation (XLSX)", 
+                    f, 
+                    file_name="evaluation.xlsx", 
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+        else:
+             # Fallback to JSON eval
+            p_eval_json = paths.get("evaluation_json")
+            if p_eval_json and os.path.exists(p_eval_json):
+                with open(p_eval_json, "rb") as f:
+                    st.download_button(
+                        "📊 Evaluation (JSON)", 
+                        f, 
+                        file_name="evaluation.json", 
+                        mime="application/json",
+                        use_container_width=True
+                    )
+            else:
+                st.button("No Evaluation", disabled=True, use_container_width=True)
+
+    # Show file structure for reference
+    with st.expander("📂 View Output File Structure"):
+        report_dir = paths.get("report_dir")
+        if report_dir:
+            dir_name = os.path.basename(report_dir)
+            st.code(f"""outputs/{dir_name}/
+├── input/
+│   └── original_input.json                       (Original uploaded data)
+├── generated/
+│   ├── full_configuration_output_from_llm.json   (LLM-generated parameters)
+│   └── full_telemetry_of_each_flight.json        (Flight telemetry data)
+├── report/
+│   ├── report.json                               (Safety report - JSON)
+│   └── report.pdf                                (Safety report - PDF)
+└── evaluation/
+    ├── evaluation.json                           (ESRI metrics - JSON)
+    └── evaluation_{dir_name}.xlsx                (ESRI metrics - Excel)""", language="text")
+            
+            st.markdown("**Quick Navigation:**")
+            st.caption(f"Open folder: `{report_dir}`")
 
 # Footer
-st.markdown("<div style='height: 40px'></div>", unsafe_allow_html=True)
-st.markdown("<center style='color:#9CA3AF;font-size:11px;'>AeroGuardian © 2026 | Pre-flight Safety Analysis System</center>", unsafe_allow_html=True)
+st.markdown("---")
+st.markdown("<center style='color:#64748B; font-size:12px'>AeroGuardian © 2026</center>", unsafe_allow_html=True)

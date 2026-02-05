@@ -1,20 +1,27 @@
+#!/bin/bash
 # =============================================================================
-# AeroGuardian PX4 + Gazebo GUI Setup Script (WSL2)
+# AeroGuardian PX4 + Gazebo Setup Script (WSL2)
 # =============================================================================
-# Author: AeroGuardian Member
-# Date: 2026-01-19
-# Version: 1.0
+# Author: AeroGuardian Team (Tiny Coders)
+# Date: 2026-02-04
+# Version: 2.0
 #
-# Professional setup script for PX4 SITL with Gazebo GUI in WSL2.
-# Configures networking for QGroundControl connection.
+# Professional setup script for PX4 SITL with Gazebo in WSL2.
+# Supports both Gazebo Harmonic (gz_x500) and Gazebo Classic (iris).
 #
 # Usage:
 #     chmod +x setup_px4_gui.sh
-#     ./setup_px4_gui.sh [--install-px4] [--install-deps] [--configure-only]
+#     ./setup_px4_gui.sh [OPTIONS]
 #
-# QGroundControl Connection:
-#     IP: 172.27.166.100
-#     Port: 18570
+# Options:
+#     --install-deps      Install system dependencies
+#     --install-px4       Install PX4-Autopilot
+#     --install-gazebo    Install Gazebo Harmonic (recommended)
+#     --configure-only    Only configure, don't install
+#     --help              Show this help message
+#
+# Recommended first-time setup:
+#     ./setup_px4_gui.sh --install-deps --install-px4 --install-gazebo
 # =============================================================================
 
 set -e
@@ -22,7 +29,7 @@ set -e
 # =============================================================================
 # Configuration
 # =============================================================================
-PX4_VERSION="v1.14.3"
+PX4_VERSION="v1.15.2"
 PX4_DIR="$HOME/PX4-Autopilot"
 LOG_FILE="$HOME/px4_setup_$(date +%Y%m%d_%H%M%S).log"
 
@@ -98,6 +105,13 @@ detect_environment() {
         IS_WSL=false
     fi
     
+    # Get Ubuntu version
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        log_info "OS: $NAME $VERSION_ID"
+        UBUNTU_VERSION="$VERSION_ID"
+    fi
+    
     # Get WSL IP
     WSL_IP=$(hostname -I | awk '{print $1}')
     log_info "WSL IP: $WSL_IP"
@@ -115,16 +129,6 @@ detect_environment() {
         log_info "Set DISPLAY to: $DISPLAY"
     fi
     
-    # Check X server
-    if command -v xset &>/dev/null; then
-        if xset q &>/dev/null 2>&1; then
-            log_success "X11 connection working"
-        else
-            log_warn "X11 connection failed - GUI may not work"
-            log_info "Ensure VcXsrv or WSLg is running on Windows"
-        fi
-    fi
-    
     log_info "QGroundControl target: $QGC_HOST_IP:$QGC_PORT"
 }
 
@@ -138,6 +142,7 @@ install_dependencies() {
     sudo apt-get update
     
     # Essential build tools
+    log_info "Installing build tools..."
     sudo apt-get install -y \
         build-essential \
         cmake \
@@ -149,9 +154,12 @@ install_dependencies() {
         python3-venv \
         ninja-build \
         ccache \
-        gdb
+        gdb \
+        lsb-release \
+        gnupg
     
     # PX4 dependencies
+    log_info "Installing PX4 dependencies..."
     sudo apt-get install -y \
         libxml2-dev \
         libxslt1-dev \
@@ -161,32 +169,71 @@ install_dependencies() {
         libprotobuf-dev \
         protobuf-compiler \
         libcurl4-openssl-dev \
-        libyaml-cpp-dev
+        libyaml-cpp-dev \
+        libopencv-dev
     
     # Networking tools
+    log_info "Installing networking tools..."
     sudo apt-get install -y \
         net-tools \
-        netcat \
+        netcat-openbsd \
         socat
     
-    # X11 for GUI (required for Gazebo display)
+    # X11 for GUI (optional, for Gazebo display)
+    log_info "Installing X11 tools..."
     sudo apt-get install -y \
         x11-apps \
         x11-xserver-utils \
-        dbus-x11
+        dbus-x11 \
+        mesa-utils
+    
+    # Python packages for MAVSDK
+    log_info "Installing Python packages..."
+    pip3 install --upgrade pip
+    pip3 install mavsdk pymavlink
     
     log_success "System dependencies installed"
 }
 
 # =============================================================================
-# Gazebo Installation
+# Gazebo Harmonic Installation (Recommended)
 # =============================================================================
 
-install_gazebo() {
+install_gazebo_harmonic() {
+    log_step "Phase 3: Installing Gazebo Harmonic"
+    
+    # Check if already installed
+    if command -v gz &>/dev/null; then
+        local gz_version=$(gz --version 2>/dev/null | head -1)
+        log_info "Gazebo already installed: $gz_version"
+        return 0
+    fi
+    
+    log_info "Adding Gazebo repository..."
+    
+    # Add OSRF repository for Gazebo
+    sudo curl https://packages.osrfoundation.org/gazebo.gpg --output /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/gazebo-stable.list > /dev/null
+    
+    sudo apt-get update
+    
+    # Install Gazebo Harmonic
+    log_info "Installing Gazebo Harmonic (this may take 5-10 minutes)..."
+    sudo apt-get install -y gz-harmonic
+    
+    log_success "Gazebo Harmonic installed"
+    gz --version | head -1
+}
+
+# =============================================================================
+# Gazebo Classic Installation (Alternative)
+# =============================================================================
+
+install_gazebo_classic() {
     log_step "Phase 3: Installing Gazebo Classic"
     
     if check_command gazebo; then
-        log_info "Gazebo is already installed"
+        log_info "Gazebo Classic is already installed"
         gazebo --version | head -1
         return 0
     fi
@@ -198,7 +245,7 @@ install_gazebo() {
     sudo apt-get update
     sudo apt-get install -y gazebo libgazebo-dev
     
-    log_success "Gazebo installed"
+    log_success "Gazebo Classic installed"
 }
 
 # =============================================================================
@@ -208,7 +255,7 @@ install_gazebo() {
 install_px4() {
     log_step "Phase 4: Installing PX4-Autopilot"
     
-    if [ -d "$PX4_DIR" ] && [ -f "$PX4_DIR/Tools/simulation/gazebo-classic/sitl_gazebo-classic/CMakeLists.txt" ]; then
+    if [ -d "$PX4_DIR" ] && [ -f "$PX4_DIR/build/px4_sitl_default/bin/px4" ]; then
         log_info "PX4-Autopilot already installed at $PX4_DIR"
         cd "$PX4_DIR"
         git describe --tags 2>/dev/null || echo "Unknown version"
@@ -218,6 +265,12 @@ install_px4() {
     # Clone PX4
     log_info "Cloning PX4-Autopilot $PX4_VERSION..."
     cd "$HOME"
+    
+    if [ -d "$PX4_DIR" ]; then
+        log_info "Removing incomplete PX4 installation..."
+        rm -rf "$PX4_DIR"
+    fi
+    
     git clone --recursive https://github.com/PX4/PX4-Autopilot.git --branch "$PX4_VERSION" --depth 1
     
     cd "$PX4_DIR"
@@ -226,32 +279,19 @@ install_px4() {
     log_info "Running PX4 setup script..."
     bash ./Tools/setup/ubuntu.sh --no-nuttx
     
-    # First build to ensure everything works
-    log_info "Building PX4 SITL (this may take 10-15 minutes)..."
-    make px4_sitl_default
+    # Build for Gazebo Harmonic (gz_x500)
+    log_info "Building PX4 SITL for Gazebo Harmonic (this may take 10-15 minutes)..."
+    make px4_sitl gz_x500
     
-    log_success "PX4-Autopilot installed and built"
+    log_success "PX4-Autopilot installed and built for Gazebo Harmonic"
 }
 
 # =============================================================================
-# MAVSDK Installation
+# Configure Environment
 # =============================================================================
 
-install_mavsdk() {
-    log_step "Phase 5: Installing MAVSDK"
-    
-    # Python MAVSDK
-    pip3 install --upgrade mavsdk pymavlink
-    
-    log_success "MAVSDK installed"
-}
-
-# =============================================================================
-# Configure QGroundControl Connection
-# =============================================================================
-
-configure_qgc_connection() {
-    log_step "Phase 6: Configuring QGroundControl Connection"
+configure_environment() {
+    log_step "Phase 5: Configuring Environment"
     
     log_info "Target QGC: $QGC_HOST_IP:$QGC_PORT"
     
@@ -261,7 +301,7 @@ configure_qgc_connection() {
 # Generated by AeroGuardian setup script
 # Date: $(date)
 
-# Display for GUI
+# Display for GUI (WSLg or VcXsrv)
 export DISPLAY=${WINDOWS_IP}:0
 
 # QGroundControl connection
@@ -269,16 +309,14 @@ export PX4_GCS_URL="udp://@${QGC_HOST_IP}:${QGC_PORT}"
 export PX4_SIM_HOST_ADDR="${QGC_HOST_IP}"
 
 # Gazebo settings
-export GAZEBO_IP=$(hostname -I | awk '{print $1}')
-export GZ_SIM_SYSTEM_PLUGIN_PATH="\$HOME/PX4-Autopilot/build/px4_sitl_default/build_gazebo-classic"
+export GZ_SIM_RESOURCE_PATH="\$HOME/PX4-Autopilot/Tools/simulation/gz/models:\$HOME/PX4-Autopilot/Tools/simulation/gz/worlds"
 
 # MAVLink ports
 export PX4_MAVSDK_PORT=$MAVSDK_PORT
 export PX4_QGC_PORT=$QGC_PORT
 
-# Silence Gazebo deprecation warnings
-export IGNITION_SILENT=1
-export GAZEBO_MASTER_URI=http://localhost:11345
+# Silence deprecation warnings
+export IGN_GAZEBO_SYSTEM_PLUGIN_PATH=""
 EOF
 
     # Add to bashrc if not already there
@@ -290,100 +328,95 @@ EOF
     
     source "$HOME/.px4_env"
     
-    log_success "QGC connection configured"
+    log_success "Environment configured"
     log_info "  Host IP: $QGC_HOST_IP"
     log_info "  Port: $QGC_PORT"
 }
 
 # =============================================================================
-# Create Launcher Script
+# Create Launcher Scripts
 # =============================================================================
 
-create_launcher() {
-    log_step "Phase 7: Creating Launcher Script"
+create_launchers() {
+    log_step "Phase 6: Creating Launcher Scripts"
     
-    # Create the main launcher script
-    cat > "$HOME/launch_px4_gazebo.sh" << 'LAUNCHER_SCRIPT'
+    # Gazebo Harmonic launcher (GUI)
+    cat > "$HOME/launch_px4_gz.sh" << 'LAUNCHER_SCRIPT'
 #!/bin/bash
 # =============================================================================
-# PX4 + Gazebo Launcher with QGroundControl Connection
-# =============================================================================
-# Usage: ./launch_px4_gazebo.sh [vehicle] [world]
-#   vehicle: iris (default), typhoon_h480, plane, rover
-#   world: empty (default), warehouse, baylands
+# PX4 + Gazebo Harmonic Launcher
+# Usage: ./launch_px4_gz.sh [--headless]
 # =============================================================================
 
-set -e
-
-# Load environment
 source "$HOME/.px4_env" 2>/dev/null || true
 
-# Configuration
-VEHICLE="${1:-iris}"
-WORLD="${2:-empty}"
 PX4_DIR="$HOME/PX4-Autopilot"
-
-# QGroundControl target (from environment or default)
 QGC_HOST="${PX4_SIM_HOST_ADDR:-172.27.166.100}"
-QGC_PORT="${PX4_QGC_PORT:-18570}"
 
-# Colors
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}  AeroGuardian PX4 + Gazebo Launcher${NC}"
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  AeroGuardian PX4 + Gazebo Harmonic Launcher"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo -e "  Vehicle: ${YELLOW}$VEHICLE${NC}"
-echo -e "  World:   ${YELLOW}$WORLD${NC}"
-echo -e "  QGC:     ${YELLOW}$QGC_HOST:$QGC_PORT${NC}"
-echo -e "  Display: ${YELLOW}$DISPLAY${NC}"
+echo "  Vehicle: X500 Quadcopter"
+echo "  Simulator: Gazebo Harmonic (gz sim)"
+echo "  QGC Target: $QGC_HOST:${PX4_QGC_PORT:-18570}"
 echo ""
 
 cd "$PX4_DIR"
-
-# Build command with QGC forwarding
 export PX4_SIM_HOST_ADDR="$QGC_HOST"
 
-echo -e "${GREEN}[+]${NC} Starting PX4 SITL + Gazebo..."
-echo -e "${GREEN}[+]${NC} MAVLink will connect to QGroundControl at $QGC_HOST:$QGC_PORT"
-echo ""
-
-# Launch with proper MAVLink forwarding
-# The -o flag sets startup options for MAVLink output
-HEADLESS=0 make px4_sitl gazebo-classic_${VEHICLE}__${WORLD}
-
+if [[ "$1" == "--headless" ]]; then
+    echo "[+] Starting PX4 SITL + Gazebo (headless)..."
+    HEADLESS=1 make px4_sitl gz_x500
+else
+    echo "[+] Starting PX4 SITL + Gazebo (GUI)..."
+    make px4_sitl gz_x500
+fi
 LAUNCHER_SCRIPT
 
-    chmod +x "$HOME/launch_px4_gazebo.sh"
+    chmod +x "$HOME/launch_px4_gz.sh"
     
-    # Create headless launcher
+    # Headless launcher
     cat > "$HOME/launch_px4_headless.sh" << 'HEADLESS_SCRIPT'
 #!/bin/bash
-# Headless PX4 SITL Launcher (no GUI)
+# Headless PX4 SITL Launcher (no GUI, for automation)
 source "$HOME/.px4_env" 2>/dev/null || true
 
-VEHICLE="${1:-iris}"
 PX4_DIR="$HOME/PX4-Autopilot"
 QGC_HOST="${PX4_SIM_HOST_ADDR:-172.27.166.100}"
 
-echo "Starting PX4 SITL (headless) - Vehicle: $VEHICLE"
+echo "Starting PX4 SITL with Gazebo Harmonic (headless)"
 echo "QGroundControl target: $QGC_HOST:${PX4_QGC_PORT:-18570}"
+echo ""
 
 cd "$PX4_DIR"
 export PX4_SIM_HOST_ADDR="$QGC_HOST"
-HEADLESS=1 make px4_sitl gazebo-classic_${VEHICLE}
-
+HEADLESS=1 make px4_sitl gz_x500
 HEADLESS_SCRIPT
 
     chmod +x "$HOME/launch_px4_headless.sh"
     
+    # Gazebo Classic launcher (alternative)
+    cat > "$HOME/launch_px4_classic.sh" << 'CLASSIC_SCRIPT'
+#!/bin/bash
+# PX4 + Gazebo Classic Launcher (alternative)
+source "$HOME/.px4_env" 2>/dev/null || true
+
+PX4_DIR="$HOME/PX4-Autopilot"
+QGC_HOST="${PX4_SIM_HOST_ADDR:-172.27.166.100}"
+
+echo "Starting PX4 SITL with Gazebo Classic (iris)"
+cd "$PX4_DIR"
+export PX4_SIM_HOST_ADDR="$QGC_HOST"
+make px4_sitl gazebo-classic_iris
+CLASSIC_SCRIPT
+
+    chmod +x "$HOME/launch_px4_classic.sh"
+    
     log_success "Launcher scripts created:"
-    log_info "  GUI:      ~/launch_px4_gazebo.sh [vehicle] [world]"
-    log_info "  Headless: ~/launch_px4_headless.sh [vehicle]"
+    log_info "  Gazebo Harmonic:    ~/launch_px4_gz.sh [--headless]"
+    log_info "  Headless mode:      ~/launch_px4_headless.sh"
+    log_info "  Gazebo Classic:     ~/launch_px4_classic.sh"
 }
 
 # =============================================================================
@@ -391,24 +424,31 @@ HEADLESS_SCRIPT
 # =============================================================================
 
 validate_installation() {
-    log_step "Phase 8: Validating Installation"
+    log_step "Phase 7: Validating Installation"
     
     local errors=0
     
     # Check PX4
-    if [ -d "$PX4_DIR" ] && [ -f "$PX4_DIR/build/px4_sitl_default/bin/px4" ]; then
+    if [ -f "$PX4_DIR/build/px4_sitl_default/bin/px4" ]; then
         log_success "PX4 SITL binary found"
     else
         log_error "PX4 SITL binary not found"
         ((errors++))
     fi
     
-    # Check Gazebo
-    if check_command gazebo; then
-        log_success "Gazebo available"
+    # Check Gazebo Harmonic
+    if command -v gz &>/dev/null; then
+        log_success "Gazebo Harmonic available"
+        gz --version | head -1
     else
-        log_error "Gazebo not found"
-        ((errors++))
+        log_warn "Gazebo Harmonic not found (optional)"
+    fi
+    
+    # Check Gazebo Classic
+    if command -v gazebo &>/dev/null; then
+        log_success "Gazebo Classic available"
+    else
+        log_warn "Gazebo Classic not found (optional)"
     fi
     
     # Check MAVSDK
@@ -416,13 +456,14 @@ validate_installation() {
         log_success "MAVSDK Python package available"
     else
         log_warn "MAVSDK Python not installed"
+        ((errors++))
     fi
     
-    # Check launcher
-    if [ -x "$HOME/launch_px4_gazebo.sh" ]; then
-        log_success "Launcher script ready"
+    # Check launcher scripts
+    if [ -x "$HOME/launch_px4_gz.sh" ]; then
+        log_success "Launcher scripts ready"
     else
-        log_warn "Launcher script not found"
+        log_warn "Launcher scripts not found"
     fi
     
     echo ""
@@ -440,24 +481,51 @@ validate_installation() {
 # =============================================================================
 
 print_summary() {
+    WSL_IP=$(hostname -I | awk '{print $1}')
+    
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${GREEN}  SETUP COMPLETE${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    echo -e "  ${BOLD}QGroundControl Connection:${NC}"
-    echo -e "    Host: ${YELLOW}$QGC_HOST_IP${NC}"
-    echo -e "    Port: ${YELLOW}$QGC_PORT${NC}"
+    echo -e "  ${BOLD}WSL IP Address:${NC} ${YELLOW}$WSL_IP${NC}"
     echo ""
-    echo -e "  ${BOLD}To launch PX4 with Gazebo GUI:${NC}"
-    echo -e "    ${GREEN}~/launch_px4_gazebo.sh${NC}"
+    echo -e "  ${BOLD}To launch PX4 with Gazebo Harmonic:${NC}"
+    echo -e "    ${GREEN}~/launch_px4_gz.sh${NC}           # With GUI"
+    echo -e "    ${GREEN}~/launch_px4_gz.sh --headless${NC} # Headless"
     echo ""
-    echo -e "  ${BOLD}To launch PX4 headless:${NC}"
-    echo -e "    ${GREEN}~/launch_px4_headless.sh${NC}"
+    echo -e "  ${BOLD}From Windows PowerShell:${NC}"
+    echo -e "    ${GREEN}\$wsl_ip = (wsl -- hostname -I).Trim().Split()[0]${NC}"
+    echo -e "    ${GREEN}python scripts/run_automated_pipeline.py -r 0 --wsl-ip \$wsl_ip --headless -s gz_x500${NC}"
     echo ""
     echo -e "  ${BOLD}Log file:${NC} $LOG_FILE"
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+# =============================================================================
+# Help
+# =============================================================================
+
+show_help() {
+    echo "AeroGuardian PX4 + Gazebo Setup Script"
+    echo ""
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --install-deps      Install system dependencies"
+    echo "  --install-px4       Install PX4-Autopilot (v$PX4_VERSION)"
+    echo "  --install-gazebo    Install Gazebo Harmonic (recommended)"
+    echo "  --configure-only    Only configure environment, don't install"
+    echo "  --help, -h          Show this help message"
+    echo ""
+    echo "Recommended first-time setup:"
+    echo "  $0 --install-deps --install-px4 --install-gazebo"
+    echo ""
+    echo "Environment variables:"
+    echo "  QGC_HOST_IP         QGroundControl host IP (default: 172.27.166.100)"
+    echo "  QGC_PORT            QGroundControl port (default: 18570)"
+    echo ""
 }
 
 # =============================================================================
@@ -467,14 +535,20 @@ print_summary() {
 main() {
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}  AeroGuardian PX4 + Gazebo Setup${NC}"
+    echo -e "${GREEN}  AeroGuardian PX4 + Gazebo Setup (v2.0)${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
     # Parse arguments
     INSTALL_DEPS=false
     INSTALL_PX4=false
+    INSTALL_GAZEBO=false
     CONFIGURE_ONLY=false
+    
+    if [ $# -eq 0 ]; then
+        show_help
+        exit 0
+    fi
     
     for arg in "$@"; do
         case $arg in
@@ -484,21 +558,20 @@ main() {
             --install-px4)
                 INSTALL_PX4=true
                 ;;
+            --install-gazebo)
+                INSTALL_GAZEBO=true
+                ;;
             --configure-only)
                 CONFIGURE_ONLY=true
                 ;;
             --help|-h)
-                echo "Usage: $0 [options]"
-                echo ""
-                echo "Options:"
-                echo "  --install-deps    Install system dependencies"
-                echo "  --install-px4     Install PX4-Autopilot"
-                echo "  --configure-only  Only configure, don't install"
-                echo ""
-                echo "Environment variables:"
-                echo "  QGC_HOST_IP       QGroundControl host IP (default: 172.27.166.100)"
-                echo "  QGC_PORT          QGroundControl port (default: 18570)"
+                show_help
                 exit 0
+                ;;
+            *)
+                echo "Unknown option: $arg"
+                show_help
+                exit 1
                 ;;
         esac
     done
@@ -507,8 +580,8 @@ main() {
     detect_environment
     
     if [ "$CONFIGURE_ONLY" = true ]; then
-        configure_qgc_connection
-        create_launcher
+        configure_environment
+        create_launchers
         validate_installation
         print_summary
         exit 0
@@ -516,17 +589,19 @@ main() {
     
     if [ "$INSTALL_DEPS" = true ]; then
         install_dependencies
-        install_gazebo
-        install_mavsdk
+    fi
+    
+    if [ "$INSTALL_GAZEBO" = true ]; then
+        install_gazebo_harmonic
     fi
     
     if [ "$INSTALL_PX4" = true ]; then
         install_px4
     fi
     
-    # Always configure and create launcher
-    configure_qgc_connection
-    create_launcher
+    # Always configure and create launchers
+    configure_environment
+    create_launchers
     validate_installation
     print_summary
 }

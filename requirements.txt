@@ -39,6 +39,10 @@ aiohttp>=3.10.0                    # Async HTTP client
 # REPORTING & VISUALIZATION
 # =============================================================================
 
+# UI & Dashboard
+streamlit>=1.31.0                  # Web UI framework
+plotly>=5.18.0                     # Interactive charts
+
 # Excel Reports
 openpyxl>=3.1.0                    # Excel file generation
 
@@ -65,10 +69,3 @@ requests>=2.32.0                   # HTTP client
 
 # Semantic Similarity
 sentence-transformers>=5.0.0       # Text embeddings for validation
-
-# =============================================================================
-# OPTIONAL: SCIENTIFIC ANALYSIS
-# =============================================================================
-
-# Machine Learning (for evaluation metrics)
-scikit-learn>=1.3.0                # ML metrics, preprocessing

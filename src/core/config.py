@@ -98,21 +98,6 @@ class Config:
             config.get_data_path("alfa_telemetry", "cleaned")
         """
         return self.project_root / "data" / Path(*parts)
-    
-    def get_model_path(self, *parts: str) -> Path:
-        """
-        Get absolute path to a model directory or file.
-        
-        Args:
-            *parts: Path components relative to models/
-            
-        Returns:
-            Absolute Path object
-            
-        Example:
-            config.get_model_path("dl", "anomaly_detector.pt")
-        """
-        return self.project_root / "models" / Path(*parts)
 
 
 # =============================================================================
@@ -163,7 +148,7 @@ def get_config(reload: bool = False) -> Config:
     Example:
         >>> config = get_config()
         >>> print(config.openai_model)
-        'gpt-4o-mini'
+        'gpt-4o'
     """
     global _config
     
@@ -174,7 +159,7 @@ def get_config(reload: bool = False) -> Config:
         # Create config from environment variables
         _config = Config(
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
-            openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-4o"),
             openai_temperature=float(os.getenv("OPENAI_TEMPERATURE", "0.1")),
             openai_max_tokens=int(os.getenv("OPENAI_MAX_TOKENS", "4096")),
             embedding_model=os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),

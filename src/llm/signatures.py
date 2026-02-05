@@ -88,7 +88,7 @@ class FAA_To_PX4_Complete(dspy.Signature):
     faa_report_text: str = dspy.InputField(
         desc="Complete FAA UAS sighting report text describing the observed event"
     )
-    faa_incident_id: str = dspy.InputField(
+    faa_report_id: str = dspy.InputField(
         desc="FAA sighting report ID for traceability"
     )
     
@@ -131,16 +131,16 @@ class FAA_To_PX4_Complete(dspy.Signature):
     # OPERATIONAL ANOMALY (inferred from sighting behavior)
     # =========================================================================
     failure_mode: str = dspy.OutputField(
-        desc="Inferred failure mode in snake_case (e.g., 'motor_failure', 'gps_loss', 'battery_depletion', 'control_signal_loss'). Base this on described UAS behavior."
+        desc="Inferred failure mode in snake_case. MUST be one of: motor_failure, gps_loss, gps_dropout, battery_failure, battery_depletion, control_loss, control_signal_loss, sensor_failure, compass_error, geofence_violation, altitude_violation, flyaway. Base inference ONLY on described UAS behavior in the sighting report. Do NOT guess."
     )
     failure_category: str = dspy.OutputField(
-        desc="Category: propulsion | navigation | power | control | environmental | airspace_violation"
+        desc="Category. MUST be one of: propulsion | navigation | power | control | environmental | airspace_violation. Match to failure_mode: motor_failure→propulsion, gps_loss→navigation, battery_*→power, control_*→control, geofence/altitude→airspace_violation."
     )
     failure_component: str = dspy.OutputField(
-        desc="Affected component: motor | gps | battery | rc_link | esc | compass | none"
+        desc="Primary affected component. MUST be one of: motor | gps | battery | rc_link | esc | compass | baro | imu | none. If unclear from sighting, use the most likely component for the failure_mode."
     )
     failure_onset_sec: int = dspy.OutputField(
-        desc="Seconds after takeoff when anomaly likely occurred. Default: 30-60s."
+        desc="Estimated seconds after takeoff when anomaly likely occurred. If sighting mentions 'during cruise'→60-120s, 'during takeoff'→10-30s, 'during landing'→120-180s. Default: 60s."
     )
     
     # =========================================================================
@@ -173,7 +173,7 @@ class FAA_To_PX4_Complete(dspy.Signature):
     # PX4 SIMULATION COMMANDS
     # =========================================================================
     px4_fault_cmd: str = dspy.OutputField(
-        desc="PX4 fault injection command. Format: 'failure inject <type> <component> <severity>'. Example: 'failure inject motor motor1 100'. Use 'none' if simulating geofence/airspace violation."
+        desc="PX4 fault injection command. Format: 'failure <component> <type> [-i <instance>]'. Valid components: motor, gps, mag, baro, gyro, accel. Valid types: off, stuck, garbage, wrong, slow, delayed. Examples: 'failure motor off -i 1' (motor 1 off), 'failure gps off' (GPS loss), 'failure mag stuck' (compass stuck). Use 'none' if failure cannot be injected via PX4 shell (e.g., RC loss, battery sag)."
     )
     
     # =========================================================================
@@ -278,44 +278,57 @@ class GeneratePreFlightReport(dspy.Signature):
         desc="Expected outcome from sighting: crash, controlled_landing, flyaway, recovery, unknown"
     )
     telemetry_summary: str = dspy.InputField(
-        desc="Telemetry analysis summary: duration_sec, max_altitude_m, position_drift_m, attitude_excursions, anomalies_detected (list), mission_success (bool)"
+        desc="Comprehensive telemetry analysis with sections: FLIGHT DURATION (seconds, data points), ALTITUDE (max, avg, deviation, stability), ATTITUDE STABILITY (max roll/pitch degrees, std dev), POSITION & GPS (drift meters, variance, satellites), SPEED (max/avg m/s), VIBRATION (max/avg), BATTERY (start/end voltage, sag rate), FAILSAFE EVENTS, ANOMALY DETECTION (severity: NONE/LOW/MEDIUM/HIGH/CRITICAL, specific anomalies detected). Use these metrics to support your hazard assessment."
     )
     
     # =========================================================================
     # SECTION 1: SAFETY LEVEL & ROOT CAUSE
     # =========================================================================
     safety_level: str = dspy.OutputField(
-        desc="CRITICAL (life safety risk), HIGH (significant property/operational risk), MEDIUM (operational impact), or LOW (minimal impact with mitigations)"
+        desc="CRITICAL (life safety risk), HIGH (significant property/operational risk), MEDIUM (operational impact), or LOW (minimal impact with mitigations). Based on SIMULATED scenario, not verified incident analysis."
     )
     primary_hazard: str = dspy.OutputField(
-        desc="Primary hazard - MUST match fault_type. Example for motor_failure: 'Propulsion system failure causing loss of control'. Example for gps_loss: 'Navigation degradation causing position uncertainty'."
+        desc="SIMULATED hazard scenario (inferred from FAA narrative, not confirmed). MUST match fault_type. Start with 'Simulated:' prefix. Example for motor_failure: 'Simulated: Motor failure scenario producing loss of control'. Example for gps_loss: 'Simulated: Navigation degradation scenario'."
     )
     observed_effect: str = dspy.OutputField(
-        desc="Observable effects from telemetry or expected effects based on aerospace engineering. Example: 'Asymmetric thrust produced 15-degree roll excursion and spiral descent at 3 m/s'."
+        desc="Effects observed IN SIMULATION (not actual incident). Prefix with 'In simulation:'. Example: 'In simulation: Motor failure produced 15-degree roll excursion and spiral descent at 3 m/s'. Do NOT claim to reproduce actual incident behavior."
+    )
+    
+    # =========================================================================
+    # CAUSAL ANALYSIS
+    # =========================================================================
+    primary_failure_subsystem: str = dspy.OutputField(
+        desc="Primary failure subsystem based on TEMPORAL ORDERING of anomalies (which subsystem showed abnormal behavior FIRST). MUST be one of: navigation | control | propulsion | sensor | power | undetermined. Base this on which subsystem failed FIRST, not on crash severity. If insufficient evidence, use 'undetermined'."
+    )
+    causal_chain: str = dspy.OutputField(
+        desc="Causal chain from root cause to outcome. Format: 'subsystem1 → subsystem2 → outcome'. Example: 'navigation (GPS loss @ t=32s) → control (attitude drift @ t=45s) → crash'. The FIRST item must match primary_failure_subsystem. If undetermined, use 'insufficient_evidence'."
+    )
+    subsystem_evidence_summary: str = dspy.OutputField(
+        desc="Evidence table showing anomalies per subsystem with timestamps, ordered by first detection time. Format: 'Navigation: [anomaly1 @ t=Xs, anomaly2 @ t=Ys] | Control: [anomaly3 @ t=Zs] | Propulsion: [none] | ...'. Include only subsystems with detected anomalies."
     )
     
     # =========================================================================
     # SECTION 2: DESIGN CONSTRAINTS & RECOMMENDATIONS
     # =========================================================================
     design_constraints: str = dspy.OutputField(
-        desc="2-4 SPECIFIC operational constraints relevant to fault_type, separated by |. Example for motor_failure: 'Maintain minimum altitude of 30m AGL for recovery time | Do not fly over populated areas without parachute | Limit operations to visual line of sight'."
+        desc="2-4 SPECIFIC operational constraints relevant to fault_type, separated by |. Prefix each with 'Consider:'. Example for motor_failure: 'Consider: Maintain minimum altitude of 30m AGL for recovery time | Consider: Limit operations over populated areas | Consider: Visual line of sight operations'."
     )
     recommendations: str = dspy.OutputField(
-        desc="3-5 ACTIONABLE engineering/procedural recommendations for the specific fault_type, separated by |. Example for motor_failure: 'Implement redundant motor configuration (6+ motors) | Install pre-flight vibration monitoring | Deploy automatic parachute system | Conduct motor health checks every 10 flight hours'."
+        desc="3-5 SUGGESTED engineering/procedural recommendations for the specific fault_type, separated by |. Prefix each with 'Consider:'. These are scenario-based suggestions, not regulatory requirements. Example for motor_failure: 'Consider: Redundant motor configuration may reduce single-point failure risk | Consider: Pre-flight vibration monitoring | Consider: Parachute recovery system'."
     )
     
     # =========================================================================
     # SECTION 3: EVIDENCE-BASED EXPLANATION
     # =========================================================================
     explanation: str = dspy.OutputField(
-        desc="3-5 sentences explaining the analysis chain: (1) State the fault_type being analyzed, (2) Describe telemetry evidence OR honestly acknowledge if telemetry doesn't show expected failure, (3) Connect evidence to safety_level determination, (4) Justify recommendations. Example: 'Motor failure analysis revealed asymmetric thrust patterns with 12-degree roll deviation. Telemetry confirmed loss of altitude stability. CRITICAL rating reflects proximity to urban area. Redundant propulsion recommended.'"
+        desc="3-5 sentences explaining the SIMULATION analysis: (1) State this is a SIMULATED fault_type scenario, (2) Describe SIMULATION telemetry evidence, (3) Acknowledge this is proxy simulation, not incident reconstruction, (4) Connect simulation results to safety_level, (5) Note recommendations are suggestions. Example: 'This analysis simulated a motor failure scenario. In simulation, the fault produced 12-degree roll deviation. NOTE: This represents quadrotor dynamics and may not match the reported aircraft. Recommendations are suggested mitigations for similar scenarios.'"
     )
     
     # =========================================================================
     # FINAL VERDICT
     # =========================================================================
     verdict: str = dspy.OutputField(
-        desc="GO (acceptable risk), CAUTION (proceed with additional precautions), or NO-GO (unacceptable risk - do not fly). Include brief justification."
+        desc="GO (no anomalies detected in simulation - standard pre-flight checks apply), CAUTION (simulation identified conditions warranting enhanced monitoring), or NO-GO (simulation indicates elevated risk - address identified hazards before flight). Include brief justification. NOTE: This is decision support only, not operational approval."
     )
 
 

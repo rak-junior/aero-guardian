@@ -36,12 +36,11 @@ FAA_TO_PX4_EXAMPLES = [
     {
         # Example 1: Motor Failure - Crash scenario
         "input": {
-            "incident_description": """PRELIM INFO FROM FAA OPS: PHOENIX, AZ/UAS INCIDENT/1045M
+            "faa_report_text": """PRELIM INFO FROM FAA OPS: PHOENIX, AZ/UAS INCIDENT/1045M
 A DJI Inspire 2 drone conducting aerial survey at 400 feet AGL reported sudden 
 loss of power to motor 3. Aircraft began spinning and descended rapidly, crashing 
 into an open field. No injuries. Weather clear, winds SW at 8 mph.""",
-            "incident_location": "PHOENIX, ARIZONA",
-            "incident_type": "motor_failure"
+            "faa_report_id": "FAA_PHOENIX_AZ_001",
         },
         "output": {
             "start_lat": 33.4484,
@@ -76,18 +75,18 @@ into an open field. No injuries. Weather clear, winds SW at 8 mph.""",
             "incident_phase": "cruise",
             "estimated_flight_time_sec": 120,
             "parameter_sources": "altitude=400ft <- 'at 400 feet AGL'; motor=3 <- 'loss of power to motor 3'; wind=8mph SW <- 'winds SW at 8 mph'",
+            "px4_fault_cmd": "failure motor off -i 3",
             "reasoning": "Altitude 400ft = 121.92m. Motor 3 failure caused spinning and crash. Weather clear, SW winds at 3.6 m/s. Crash in open field indicates rural environment."
         }
     },
     {
         # Example 2: GPS Loss - Urban canyon
         "input": {
-            "incident_description": """PRELIM INFO FROM FAA OPS: DENVER, CO/UAS INCIDENT/1400M
+            "faa_report_text": """PRELIM INFO FROM FAA OPS: DENVER, CO/UAS INCIDENT/1400M
 During commercial photography at 200ft near downtown buildings, Yuneec H520 
 experienced complete GPS signal loss. Drone drifted 150 meters from intended 
 position before pilot manually landed. Temperature 45°F, overcast. No damage.""",
-            "incident_location": "DENVER, COLORADO",
-            "incident_type": "gps_loss"
+            "faa_report_id": "FAA_SEATTLE_WA_005",
         },
         "output": {
             "start_lat": 39.7392,
@@ -122,18 +121,18 @@ position before pilot manually landed. Temperature 45°F, overcast. No damage.""
             "incident_phase": "hover",
             "estimated_flight_time_sec": 180,
             "parameter_sources": "altitude=200ft <- 'at 200ft'; drift=150m <- 'drifted 150 meters'; temp=45F <- 'Temperature 45°F'",
+            "px4_fault_cmd": "failure gps off",
             "reasoning": "Altitude 200ft = 60.96m. Downtown buildings caused GPS multipath. 150m drift indicates complete GPS loss. Urban canyon environment with reduced satellite visibility."
         }
     },
     {
         # Example 3: Control Loss - RC link failure
         "input": {
-            "incident_description": """PRELIM INFO FROM FAA OPS: MIAMI, FL/UAS INCIDENT/1130E
+            "faa_report_text": """PRELIM INFO FROM FAA OPS: MIAMI, FL/UAS INCIDENT/1130E
 Operator reported losing RC signal during inspection flight at 300ft over construction site.
 Drone entered RTL mode but descended erratically. Emergency landing on rooftop.
 Winds gusting to 25 mph. Minor damage to landing gear.""",
-            "incident_location": "MIAMI, FLORIDA",
-            "incident_type": "control_loss"
+            "faa_report_id": "FAA_MIAMI_FL_003",
         },
         "output": {
             "start_lat": 25.7617,
@@ -168,18 +167,18 @@ Winds gusting to 25 mph. Minor damage to landing gear.""",
             "incident_phase": "cruise",
             "estimated_flight_time_sec": 150,
             "parameter_sources": "altitude=300ft <- 'at 300ft'; wind=25mph <- 'gusting to 25 mph'; outcome=RTL <- 'entered RTL mode'",
+            "px4_fault_cmd": "none",
             "reasoning": "Altitude 300ft = 91.44m. RC signal lost during construction inspection. High winds (11.2 m/s gusts) caused erratic descent during RTL. Urban environment with potential RF interference."
         }
     },
     {
         # Example 4: Battery Failure - Critical low voltage
         "input": {
-            "incident_description": """PRELIM INFO FROM FAA OPS: LAS VEGAS, NV/UAS INCIDENT/1545P
+            "faa_report_text": """PRELIM INFO FROM FAA OPS: LAS VEGAS, NV/UAS INCIDENT/1545P
 Matrice 300 RTK performing powerline inspection experienced rapid battery voltage drop
 at 500ft. Operator observed voltage drop from 46V to 38V in 30 seconds. 
-Emergency descent initiated. Landed with 8% battery. No damage.""",
-            "incident_location": "LAS VEGAS, NEVADA",
-            "incident_type": "battery_failure"
+Emergency descent initiated. Landed with 8% battery. No damage."""  ,
+            "faa_report_id": "FAA_LAS_VEGAS_NV_004",
         },
         "output": {
             "start_lat": 36.1699,
@@ -214,18 +213,18 @@ Emergency descent initiated. Landed with 8% battery. No damage.""",
             "incident_phase": "cruise",
             "estimated_flight_time_sec": 400,
             "parameter_sources": "altitude=500ft <- 'at 500ft'; voltage=46V->38V <- 'voltage drop from 46V to 38V'; time=30s <- 'in 30 seconds'",
+            "px4_fault_cmd": "none",
             "reasoning": "Altitude 500ft = 152.4m. Rapid voltage drop (8V in 30s) indicates battery cell failure or extreme temperature stress. High ambient temp 38°C may have contributed. Emergency descent saved the aircraft."
         }
     },
     {
         # Example 5: Sensor Fault - IMU/Compass failure
         "input": {
-            "incident_description": """PRELIM INFO FROM FAA OPS: SEATTLE, WA/UAS INCIDENT/0930P
+            "faa_report_text": """PRELIM INFO FROM FAA OPS: SEATTLE, WA/UAS INCIDENT/0930P
 DJI Phantom 4 Pro experienced compass error warning during mapping flight at 250ft.
 Aircraft began flying in circles and drifted toward highway. Operator manually overrode
 and landed in parking lot. Near magnetic interference from power substation.""",
-            "incident_location": "SEATTLE, WASHINGTON",
-            "incident_type": "sensor_fault"
+            "faa_report_id": "FAA_SEATTLE_WA_005"
         },
         "output": {
             "start_lat": 47.6062,
@@ -260,6 +259,7 @@ and landed in parking lot. Near magnetic interference from power substation.""",
             "incident_phase": "cruise",
             "estimated_flight_time_sec": 200,
             "parameter_sources": "altitude=250ft <- 'at 250ft'; sensor=compass <- 'compass error warning'; cause=magnetic <- 'near magnetic interference from power substation'",
+            "px4_fault_cmd": "failure mag stuck",
             "reasoning": "Altitude 250ft = 76.2m. Compass interference from power substation caused erratic circular flight pattern. Manual override prevented potential highway incident. Suburban environment with electromagnetic interference sources."
         }
     }
@@ -530,11 +530,10 @@ def get_faa_to_px4_examples() -> List[dspy.Example]:
     examples = []
     for ex in FAA_TO_PX4_EXAMPLES:
         example = dspy.Example(
-            incident_description=ex["input"]["incident_description"],
-            incident_location=ex["input"]["incident_location"],
-            incident_type=ex["input"]["incident_type"],
+            faa_report_text=ex["input"]["faa_report_text"],
+            faa_report_id=ex["input"]["faa_report_id"],
             **ex["output"]
-        ).with_inputs("incident_description", "incident_location", "incident_type")
+        ).with_inputs("faa_report_text", "faa_report_id")
         examples.append(example)
     return examples
 

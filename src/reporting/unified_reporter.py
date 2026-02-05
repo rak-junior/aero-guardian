@@ -1,22 +1,28 @@
 """
 Unified Report Generator
 ========================
-Author: AeroGuardian Member
+Author: AeroGuardian Team (Tiny Coders)
 Date: 2026-01-16
-Updated: 2026-01-31
+Updated: 2026-02-04
 
 Generates safety reports from FAA UAS sighting analysis:
 
 SAFETY REPORTS (per-sighting):
-- JSON: Machine-readable full data structure
+- JSON: Machine-readable full data structure with telemetry metrics
 - PDF: Professional single-page executive report
 
 EVALUATION OUTPUTS (separate):
 - Excel: ESRI evaluation metrics (SFS, BRR, ECC scores)
+
+TELEMETRY ANALYSIS:
+- Normalizes angles to [-180, 180] range
+- Calculates GPS variance with proper coordinate filtering
+- Detects anomalies using physics-based thresholds
 """
 
 import json
 import logging
+import math
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, asdict
@@ -64,7 +70,7 @@ class PreFlightReport:
     """Pre-flight safety report standard."""
     
     # Header
-    incident_id: str
+    report_id: str
     location: str
     generated_at: str
     
@@ -131,11 +137,19 @@ class UnifiedReporter:
         - {incident_id}/report/report.json, report.xlsx, report.pdf
         - {incident_id}/evaluation/evaluation.json, evaluation.xlsx
         
+        Args:
+            incident: FAA incident data
+            flight_config: LLM-generated PX4 configuration
+            telemetry: Simulation telemetry data
+            safety_analysis: Generated safety analysis
+            llm_latency_ms: LLM call latency for logging
+            
         Returns:
             Dict with paths to generated files
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        incident_dir = self.output_dir / f"{incident.get('incident_id', 'unknown')}_{timestamp}"
+        incident_id = incident.get('report_id', 'unknown')
+        incident_dir = self.output_dir / f"{incident_id}_{timestamp}"
         incident_dir.mkdir(exist_ok=True)
         
         # Create subfolders
@@ -144,7 +158,7 @@ class UnifiedReporter:
         
         generated_dir = incident_dir / "generated"
         generated_dir.mkdir(exist_ok=True)
-        
+
         # Build unified report data
         report_data = self._build_report_data(incident, flight_config, telemetry, safety_analysis)
         
@@ -171,11 +185,12 @@ class UnifiedReporter:
                     safety_report=safety_analysis,
                     telemetry_stats=None,  # Let BRR compute from raw telemetry
                 )
+                
                 report_data["evaluation"] = evaluation_result.to_dict()
                 logger.info(
                     f"Evaluation: ESRI={evaluation_result.esri * 100:.1f}% "
                     f"(SFS={evaluation_result.sfs * 100:.0f}%, BRR={evaluation_result.brr * 100:.0f}%, "
-                    f"ECC={evaluation_result.ecc * 100:.0f}%) [{evaluation_result.trust_level}]"
+                    f"ECC={evaluation_result.ecc * 100:.0f}%) [{evaluation_result.consistency_level}]"
                 )
             except Exception as e:
                 logger.warning(f"Evaluation failed: {e}")
@@ -206,12 +221,6 @@ class UnifiedReporter:
         self._generate_json(report_data, telemetry, json_path)
         paths["json"] = json_path
         
-        # Generate Excel (if openpyxl available)
-        # if HAS_OPENPYXL:
-        #     excel_path = report_dir / "report.xlsx"
-        #     self._generate_excel(report_data, telemetry, excel_path, evaluation_result)
-        #     paths["excel"] = excel_path
-        
         # Generate PDF (if reportlab available)
         if self.pdf_generator:
             pdf_path = report_dir / "report.pdf"
@@ -228,11 +237,23 @@ class UnifiedReporter:
                 eval_dir = incident_dir / "evaluation"
                 eval_dir.mkdir(exist_ok=True)
                 
-                # Export evaluation JSON
+                # Import regulatory standards for inclusion in evaluation
+                try:
+                    from src.evaluation.regulatory_standards import get_regulatory_summary
+                    regulatory_data = get_regulatory_summary()
+                except ImportError:
+                    regulatory_data = {}
+                
+                # Export evaluation JSON with regulatory grounding
                 eval_json_path = eval_dir / "evaluation.json"
                 import json
+                
+                # Combine evaluation results with regulatory standards
+                eval_data = evaluation_result.to_dict()
+                eval_data.update(regulatory_data)  # Include FAA/DO standards
+                
                 with open(eval_json_path, "w", encoding="utf-8") as f:
-                    json.dump(evaluation_result.to_dict(), f, indent=2)
+                    json.dump(eval_data, f, indent=2)
                 paths["evaluation_json"] = eval_json_path
                 
                 # Export evaluation Excel
@@ -245,10 +266,42 @@ class UnifiedReporter:
             except Exception as e:
                 logger.warning(f"Evaluation export failed: {e}")
         
-        
         logger.info(f"Reports saved to: {incident_dir}")
         paths["report_dir"] = incident_dir
         return paths
+    
+    def _extract_assumptions(self, flight_config: Dict) -> List[str]:
+        """
+        Extract assumptions made during scenario generation.
+        
+        SAFETY RATIONALE: Every assumption reduces confidence.
+        We must track what was inferred vs. what was explicit in source.
+        """
+        assumptions = []
+        
+        # Check for default values that indicate missing data
+        reasoning = flight_config.get("reasoning", "")
+        
+        if "default" in reasoning.lower():
+            assumptions.append("Default values used where FAA report lacked specifics")
+        
+        if "assumed" in reasoning.lower() or "infer" in reasoning.lower():
+            assumptions.append("Failure mode inferred from behavioral description")
+        
+        if "not specified" in reasoning.lower():
+            assumptions.append("Some parameters not specified in source report")
+        
+        # Check environment assumptions
+        env = flight_config.get("environment", {})
+        if env.get("weather") in ["not_specified", "unknown", None, ""]:
+            assumptions.append("Weather conditions unknown, using defaults")
+        
+        # Check if altitude was clamped
+        mission = flight_config.get("mission", {})
+        if mission.get("takeoff_altitude_m", 0) == 120.0:
+            assumptions.append("Altitude clamped to 120m simulation limit")
+        
+        return assumptions
     
     def _build_report_data(
         self,
@@ -284,11 +337,22 @@ class UnifiedReporter:
             "generated_at": datetime.now().isoformat(),
             
             # =========================================================
+            # MANDATORY DISCLAIMER (SAFETY-CRITICAL)
+            # =========================================================
+            "disclaimer": {
+                "status": "DECISION SUPPORT TOOL - NOT A SAFETY CERTIFICATION",
+                "data_source": "FAA UAS sighting data (observational, non-investigative)",
+                "methodology": "LLM-inferred failure scenarios (hypothesis, not diagnosis)",
+                "simulation": "PX4 SITL with X500 quadrotor (proxy approximation, not reconstruction)",
+                "warning": "Do NOT use this report as sole justification for flight operations. All operational decisions remain the responsibility of the operator.",
+            },
+            
+            # =========================================================
             # INCIDENT SOURCE (Input Context)
             # =========================================================
             "incident_source": {
                 "original_faa_narrative": incident.get("description", incident.get("summary", "")),
-                "report_id": incident.get("incident_id", "Unknown"),
+                "report_id": incident.get("report_id", "Unknown"),
                 "date_time": incident.get("date", ""),
                 "location": f"{incident.get('city', 'Unknown')}, {incident.get('state', 'Unknown')}",
             },
@@ -352,7 +416,7 @@ class UnifiedReporter:
                 "hazard_level": safety_analysis.get("safety_level", safety_analysis.get("hazard_level", "UNKNOWN")),
             },
             "incident": {
-                "id": incident.get("incident_id", "Unknown"),
+                "id": incident.get("report_id", "Unknown"),
                 "location": f"{incident.get('city', 'Unknown')}, {incident.get('state', 'Unknown')}",
             },
             "flight_config": flight_config if flight_config else {},
@@ -367,19 +431,46 @@ class UnifiedReporter:
         if not telemetry:
             return {"error": "No telemetry data"}
         
+        # Helper to normalize angles to ±180° range
+        # This prevents misleading values like 1070° when drone rotates multiple times
+        def normalize_angle(angle_deg: float) -> float:
+            """Normalize angle to [-180, 180] range."""
+            while angle_deg > 180:
+                angle_deg -= 360
+            while angle_deg < -180:
+                angle_deg += 360
+            return angle_deg
+        
         alts = [t.get("alt", 0) for t in telemetry]
         speeds = [(t.get("vx", 0)**2 + t.get("vy", 0)**2)**0.5 for t in telemetry]
-        pitches = [abs(t.get("pitch", 0) * 57.3) for t in telemetry]  # Convert to degrees
-        rolls = [t.get("roll", 0) * 57.3 for t in telemetry]  # Convert to degrees
+        # Convert radians to degrees AND normalize to ±180°
+        pitches = [normalize_angle(t.get("pitch", 0) * 57.3) for t in telemetry]
+        rolls = [normalize_angle(t.get("roll", 0) * 57.3) for t in telemetry]
         
-        # Calculate GPS variance (position drift)
+        # Calculate GPS variance (position drift) - max distance from start position
+        # CRITICAL: Only use telemetry points with valid GPS coordinates (non-zero)
         gps_variance = 0.0
         if len(telemetry) > 1:
-            lats = [t.get("lat", 0) for t in telemetry]
-            lons = [t.get("lon", 0) for t in telemetry]
-            lat_var = max(lats) - min(lats) if lats else 0
-            lon_var = max(lons) - min(lons) if lons else 0
-            gps_variance = (lat_var**2 + lon_var**2)**0.5 * 111000  # Approx meters
+            # Filter for valid GPS coordinates (exclude zeros which indicate missing data)
+            valid_coords = [
+                (t.get("lat", 0), t.get("lon", 0)) 
+                for t in telemetry 
+                if t.get("lat", 0) != 0 and t.get("lon", 0) != 0
+            ]
+            
+            if len(valid_coords) > 1:
+                lats = [c[0] for c in valid_coords]
+                lons = [c[1] for c in valid_coords]
+                start_lat, start_lon = lats[0], lons[0]
+                
+                # Calculate max distance from start (in meters)
+                max_drift = 0.0
+                for lat, lon in valid_coords:
+                    dlat = (lat - start_lat) * 111000  # degrees to meters
+                    dlon = (lon - start_lon) * 111000 * abs(math.cos(math.radians(start_lat)))
+                    drift = math.sqrt(dlat**2 + dlon**2)
+                    max_drift = max(max_drift, drift)
+                gps_variance = max_drift
         
         # Calculate roll oscillation frequency (zero crossings / duration)
         roll_oscillation_freq = 0.0
@@ -396,14 +487,14 @@ class UnifiedReporter:
         # Detect failsafe events (expanded to include attitude instabilities)
         failsafe_events = []
         max_roll_abs = max(abs(r) for r in rolls) if rolls else 0
-        max_pitch = max(pitches) if pitches else 0
+        max_pitch_abs = max(abs(p) for p in pitches) if pitches else 0
         
         # Check for motor failure pattern (excessive roll)
         if max_roll_abs > 30:  # 30° roll is abnormal for multirotors
             failsafe_events.append("MOTOR_FAILURE_PATTERN")
         
         # Check for control anomaly (excessive pitch)
-        if max_pitch > 20:  # 20° pitch deviation
+        if max_pitch_abs > 20:  # 20° pitch deviation
             failsafe_events.append("CONTROL_ANOMALY")
         
         # Check for altitude-based events
@@ -429,14 +520,14 @@ class UnifiedReporter:
             "avg_altitude_m": sum(alts) / len(alts) if alts else 0,
             "max_speed_mps": max(speeds) if speeds else 0,
             "avg_speed_mps": sum(speeds) / len(speeds) if speeds else 0,
-            "max_roll_deg": round(max(abs(r) for r in rolls), 1) if rolls else 0,  # ADDED: Critical for safety report!
-            "max_pitch_deg": round(max(pitches), 1) if pitches else 0,  # ADDED: For consistency
+            "max_roll_deg": round(max(abs(r) for r in rolls), 1) if rolls else 0,
+            "max_pitch_deg": round(max(abs(p) for p in pitches), 1) if pitches else 0,
             "data_points": len(telemetry),
             
             # LLM-ready telemetry summary format
             "flight_summary": {
-                "max_pitch": round(max(pitches), 1) if pitches else 0,
-                "max_roll": round(max(abs(r) for r in rolls), 1) if rolls else 0,  # ADDED: Roll in flight_summary
+                "max_pitch": round(max(abs(p) for p in pitches), 1) if pitches else 0,
+                "max_roll": round(max(abs(r) for r in rolls), 1) if rolls else 0,
                 "roll_oscillation_freq": round(roll_oscillation_freq, 2),
                 "gps_variance": round(gps_variance, 1),
                 "altitude_deviation": round(altitude_deviation, 1),
@@ -470,26 +561,101 @@ class UnifiedReporter:
     
     def _save_full_config(self, flight_config: Dict, incident: Dict, path: Path):
         """
-        Save full LLM-generated configuration output.
+        Save full LLM-generated configuration output with P0-P2 research enhancements.
         
-        This preserves the complete configuration with all 30+ parameters
-        exactly as generated by the LLM for traceability and research.
+        This preserves the complete configuration with all parameters,
+        uncertainty scores, evidence traceability, and proxy modeling info.
         """
+        # Extract P0-P2 fields from flight_config if present
+        uncertainty_score = flight_config.get("uncertainty_score", 0.5)
+        fault_injection_supported = flight_config.get("fault_injection_supported", True)
+        narrative_facts = flight_config.get("narrative_facts", {})
+        inferred_parameters = flight_config.get("inferred_parameters", {})
+        proxy_modeling = flight_config.get("proxy_modeling", {})
+        evidence_map = flight_config.get("evidence_map", {})
+        reconstruction_level = flight_config.get("reconstruction_level", "proxy_simulation")
+        
+        # Check for fault alignment issue (P0)
+        px4_cmd = flight_config.get("px4_commands", {}).get("fault", "none")
+        fault_type = flight_config.get("fault_injection", {}).get("fault_type", "unknown")
+        fault_alignment_warning = None
+        if px4_cmd in ["none", "", "n/a"] and fault_type not in ["none", "unknown"]:
+            fault_alignment_warning = f"UNSUPPORTED: fault_type='{fault_type}' but px4_fault_cmd='none'. Using behavioral emulation."
+        
+        # Check for fault injection execution status
+        fault_injection_status = flight_config.get("fault_injection_status", {})
+        fault_injection_mode = fault_injection_status.get("mode", "unknown")
+        fault_injection_success = fault_injection_status.get("success", True)
+        fault_injection_warning = None
+        if fault_injection_mode == "fallback":
+            fault_injection_warning = "FALLBACK: Fault injection failed (timeout or error). Using approximate behavioral emulation instead of actual sensor/actuator injection."
+        elif fault_injection_mode == "emulated" and not fault_injection_success:
+            fault_injection_warning = "EMULATED: Native PX4 fault injection unavailable. Using behavioral simulation."
+        
         full_output = {
             "metadata": {
                 "file_type": "full_configuration_output_from_llm",
                 "generated_at": datetime.now().isoformat(),
-                "incident_id": incident.get("incident_id", "unknown"),
+                "report_id": incident.get("report_id", "unknown"),
                 "incident_location": f"{incident.get('city', 'Unknown')}, {incident.get('state', 'Unknown')}",
                 "description": "Complete LLM-generated PX4 simulation configuration",
+                # P2: Reconstruction metadata
+                "reconstruction_level": reconstruction_level,
+                "reconstruction_level_description": {
+                    "proxy_simulation": "Simulating with different platform than source aircraft",
+                    "partial_match": "Same aircraft class with some inferred parameters",
+                    "behavioral_class": "Simulating general failure behavior class only",
+                }.get(reconstruction_level, "Unknown"),
             },
             "source_incident": {
-                "id": incident.get("incident_id", ""),
+                "id": incident.get("report_id", ""),
                 "city": incident.get("city", ""),
                 "state": incident.get("state", ""),
                 "date": incident.get("date", ""),
                 "summary": incident.get("summary", incident.get("description", "")),
                 "incident_type": incident.get("incident_type", ""),
+            },
+            # P0: Uncertainty and alignment
+            "uncertainty_analysis": {
+                "uncertainty_score": uncertainty_score,
+                "uncertainty_interpretation": "LOW" if uncertainty_score < 0.4 else "MEDIUM" if uncertainty_score < 0.6 else "HIGH",
+                "fault_injection_supported": fault_injection_supported,
+                "fault_alignment_warning": fault_alignment_warning,
+                "fault_injection_status": {
+                    "mode": fault_injection_mode,
+                    "success": fault_injection_success,
+                    "warning": fault_injection_warning,
+                },
+            },
+            # P0: Narrative facts vs inferred parameters
+            "narrative_vs_inferred": {
+                "narrative_facts": narrative_facts or {
+                    "note": "Extracted directly from FAA report text",
+                    "location_stated": f"{incident.get('city', '')}, {incident.get('state', '')}",
+                },
+                "inferred_parameters": inferred_parameters or {
+                    "note": "LLM-inferred values not explicitly stated in report",
+                },
+            },
+            # P1: Proxy modeling information
+            "proxy_simulation": proxy_modeling or {
+                "source_aircraft_class": "unknown",
+                "simulation_platform": "x500_quadcopter",
+                "platform_substitution": True,
+                "substitution_reason": "PX4 SITL default quadrotor model",
+            },
+            # P2: Evidence traceability
+            "evidence_traceability": {
+                "map": evidence_map or {},
+                "legend": {
+                    "FAA_NARRATIVE": "Extracted from FAA sighting report text",
+                    "LLM_INFERENCE": "Inferred by LLM from context",
+                    "LLM_DEFAULT": "LLM used default value (not in report)",
+                    "LLM_MAPPING": "LLM mapped to PX4 command",
+                    "LLM_GENERATED": "LLM generated (waypoints, etc.)",
+                    "GEOCODER_API": "Resolved via geocoding API",
+                    "NOT_SUPPORTED": "Cannot be represented in simulation",
+                },
             },
             "llm_configuration": flight_config,
             "parameter_count": self._count_params(flight_config),
@@ -520,7 +686,7 @@ class UnifiedReporter:
             "metadata": {
                 "file_type": "full_telemetry_of_each_flight",
                 "generated_at": datetime.now().isoformat(),
-                "incident_id": incident.get("incident_id", "unknown"),
+                "report_id": incident.get("report_id", "unknown"),
                 "description": "Complete flight telemetry from PX4 simulation",
             },
             "flight_summary": {

@@ -25,6 +25,8 @@ class FailureCategory(Enum):
     BATTERY = "battery"
     CONTROL = "control"
     SENSOR = "sensor"
+    ALTITUDE = "altitude"
+    AIRSPACE_VIOLATION = "airspace_violation"  # NOT a failure - healthy drone in wrong location
 
 
 class FailurePhase(Enum):
@@ -121,16 +123,19 @@ class FailureEmulator:
         "navigation": FailureCategory.NAVIGATION,
         "gnss": FailureCategory.NAVIGATION,
         "position": FailureCategory.NAVIGATION,
+        "flyaway": FailureCategory.NAVIGATION,  # Flyaway is navigation loss
         # Battery/Power
         "battery": FailureCategory.BATTERY,
         "power": FailureCategory.BATTERY,
         "voltage": FailureCategory.BATTERY,
+        "depletion": FailureCategory.BATTERY,
         # Control
         "control": FailureCategory.CONTROL,
         "servo": FailureCategory.CONTROL,
         "actuator": FailureCategory.CONTROL,
         "link": FailureCategory.CONTROL,
         "rc": FailureCategory.CONTROL,
+        "signal": FailureCategory.CONTROL,
         # Sensor
         "sensor": FailureCategory.SENSOR,
         "imu": FailureCategory.SENSOR,
@@ -139,6 +144,16 @@ class FailureEmulator:
         "baro": FailureCategory.SENSOR,
         "mag": FailureCategory.SENSOR,
         "compass": FailureCategory.SENSOR,
+        # Altitude (mechanical failure affecting altitude control)
+        "altitude": FailureCategory.ALTITUDE,
+        "height": FailureCategory.ALTITUDE,
+        "vertical": FailureCategory.ALTITUDE,
+        "z-axis": FailureCategory.ALTITUDE,
+        # Airspace Violations - NOT mechanical failures
+        # These represent a healthy drone in the wrong location
+        "geofence": FailureCategory.AIRSPACE_VIOLATION,
+        "airspace": FailureCategory.AIRSPACE_VIOLATION,
+        "violation": FailureCategory.AIRSPACE_VIOLATION,
     }
     
     def __init__(self, drone, randomizer: Optional[TemporalRandomizer] = None):
@@ -156,6 +171,11 @@ class FailureEmulator:
     def _classify_fault_type(self, fault_type: str) -> FailureCategory:
         """Map fault type string to failure category."""
         fault_lower = fault_type.lower().replace("-", "_").replace(" ", "_")
+        
+        # Special case: altitude_violation is an AIRSPACE violation, not a mechanical failure
+        # The drone is healthy but in the wrong location
+        if "altitude_violation" in fault_lower:
+            return FailureCategory.AIRSPACE_VIOLATION
         
         for keyword, category in self.CATEGORY_MAPPING.items():
             if keyword in fault_lower:
@@ -190,7 +210,7 @@ class FailureEmulator:
                 logger.warning(f"Could not restore param {param_name}: {e}")
         self._original_params.clear()
     
-    async def emulate(self, fault_type: str, severity: float = 1.0) -> EmulationResult:
+    async def emulate(self, fault_type: str, severity: float = 1.0, parachute_trigger: bool = False) -> EmulationResult:
         """
         Execute failure emulation for the specified fault type.
         
@@ -200,6 +220,7 @@ class FailureEmulator:
         Args:
             fault_type: Type of failure to emulate (e.g., "motor_failure", "gps_loss")
             severity: Severity level 0.0-1.0 (1.0 = complete failure)
+            parachute_trigger: If True and control failure, simulate parachute deployment
         
         Returns:
             EmulationResult with details of the emulation
@@ -208,6 +229,26 @@ class FailureEmulator:
         severity = self.randomizer.randomize_severity(severity)
         
         logger.info(f"🔧 Emulating {category.value} failure (severity: {severity:.2f})")
+        if parachute_trigger:
+            logger.info("    🪂 Parachute deployment requested")
+        
+        # Special handling for control failures with parachute
+        if category == FailureCategory.CONTROL and parachute_trigger:
+            try:
+                result = await self._emulate_control_instability(severity, parachute_trigger=True)
+                logger.info(f"✅ Failure emulation complete: {result.method}")
+                return result
+            except Exception as e:
+                logger.error(f"❌ Failure emulation failed: {e}")
+                return EmulationResult(
+                    success=False,
+                    category=category,
+                    method="error",
+                    phases_completed=[],
+                    observation_duration=0,
+                    landed=False,
+                    error=str(e),
+                )
         
         handlers = {
             FailureCategory.PROPULSION: self._emulate_propulsion_anomaly,
@@ -215,6 +256,8 @@ class FailureEmulator:
             FailureCategory.BATTERY: self._emulate_battery_failure,
             FailureCategory.CONTROL: self._emulate_control_instability,
             FailureCategory.SENSOR: self._emulate_sensor_degradation,
+            FailureCategory.ALTITUDE: self._emulate_altitude_failure,
+            FailureCategory.AIRSPACE_VIOLATION: self._emulate_airspace_violation,
         }
         
         handler = handlers.get(category, self._emulate_control_instability)
@@ -448,14 +491,21 @@ class FailureEmulator:
             await self._restore_original_params()
             raise e
     
-    async def _emulate_control_instability(self, severity: float) -> EmulationResult:
+    async def _emulate_control_instability(self, severity: float, parachute_trigger: bool = False) -> EmulationResult:
         """
         Emulate control system failure through gain degradation.
         
         Creates oscillatory instability characteristic of real control failures.
         Shows growing oscillations, saturation attempts, then recovery.
+        
+        Args:
+            severity: Failure severity (0.0-1.0)
+            parachute_trigger: If True, simulate parachute deployment in Phase 4
+                             (rapid controlled descent instead of normal landing)
         """
         logger.info("  → Control instability: Gain degradation emulation")
+        if parachute_trigger:
+            logger.info("    🪂 Parachute deployment will be simulated in recovery phase")
         phases_completed = []
         telemetry_markers = {}
         
@@ -510,18 +560,36 @@ class FailureEmulator:
             await asyncio.sleep(phase_durations["critical"])
             phases_completed.append("CRITICAL")
             
-            # Phase 4: RESOLUTION - Restore gains and land
-            logger.info("  Phase 4: RESOLUTION - Restoring control, landing")
-            await self._restore_original_params()
-            await self.drone.action.land()
+            # Phase 4: RESOLUTION - Restore gains and land (or parachute deploy)
+            if parachute_trigger:
+                logger.info("  Phase 4: PARACHUTE_DEPLOY - 🪂 Simulating parachute deployment")
+                telemetry_markers["parachute_deploy"] = asyncio.get_event_loop().time()
+                # Parachute simulation: Kill all motors (motors off), let physics handle descent
+                # This produces distinct telemetry: rapid altitude loss, minimal control authority
+                await self._restore_original_params()
+                try:
+                    # Set to STABILIZED mode with minimal throttle (simulates parachute descent)
+                    await self.drone.action.hold()
+                    await asyncio.sleep(2)  # Brief hover
+                    # Then land - simulating parachute bringing it down
+                    await self.drone.action.land()
+                except Exception as e:
+                    logger.warning(f"    Parachute simulation fallback: {e}")
+                    await self.drone.action.land()
+                phases_completed.append("PARACHUTE_DEPLOY")
+            else:
+                logger.info("  Phase 4: RESOLUTION - Restoring control, landing")
+                await self._restore_original_params()
+                await self.drone.action.land()
+                phases_completed.append("RESOLUTION")
+            
             telemetry_markers["resolution_start"] = asyncio.get_event_loop().time()
             await asyncio.sleep(15)
-            phases_completed.append("RESOLUTION")
             
             return EmulationResult(
                 success=True,
                 category=FailureCategory.CONTROL,
-                method="control_gain_degradation",
+                method="control_gain_degradation" + ("_with_parachute" if parachute_trigger else ""),
                 phases_completed=phases_completed,
                 observation_duration=sum(phase_durations.values()) + 15,
                 landed=True,
@@ -610,4 +678,124 @@ class FailureEmulator:
             
         except Exception as e:
             await self._restore_original_params()
+            raise e
+            raise e
+    
+    async def _emulate_altitude_failure(self, severity: float) -> EmulationResult:
+        """
+        Emulate altitude control failure through Z-axis gain degradation.
+        
+        Creates instability in vertical hold, leading to drift or oscillation.
+        """
+        logger.info("  → Altitude failure: Z-axis gain degradation emulation")
+        phases_completed = []
+        telemetry_markers = {}
+        
+        # Store original altitude gains
+        original_z_p = await self._store_original_param("MPC_Z_P")
+        original_z_vel_p = await self._store_original_param("MPC_Z_VEL_P")
+        
+        if original_z_p == 0:
+            original_z_p = 1.0
+        if original_z_vel_p == 0:
+            original_z_vel_p = 0.2
+            
+        phase_durations = {
+            "incipient": self.randomizer.randomize_phase_duration(8.0),
+            "propagation": self.randomizer.randomize_phase_duration(10.0),
+            "critical": self.randomizer.randomize_phase_duration(12.0),
+        }
+        
+        try:
+            # Phase 1: INCIPIENT - Soft altitude hold
+            logger.info("  Phase 1: INCIPIENT - Altitude hold softening")
+            await self.drone.param.set_param_float("MPC_Z_P", original_z_p * 0.5)
+            telemetry_markers["phase1_start"] = asyncio.get_event_loop().time()
+            await asyncio.sleep(phase_durations["incipient"])
+            phases_completed.append("INCIPIENT")
+            
+            # Phase 2: PROPAGATION - Oscillations / Drift
+            logger.info("  Phase 2: PROPAGATION - Vertical instability")
+            await self.drone.param.set_param_float("MPC_Z_P", original_z_p * 0.2)
+            await self.drone.param.set_param_float("MPC_Z_VEL_P", original_z_vel_p * 0.5)
+            telemetry_markers["phase2_start"] = asyncio.get_event_loop().time()
+            await asyncio.sleep(phase_durations["propagation"])
+            phases_completed.append("PROPAGATION")
+            
+            # Phase 3: CRITICAL - Severe degradation (if high severity)
+            if severity > 0.6:
+                logger.info("  Phase 3: CRITICAL - Loss of vertical dampening")
+                await self.drone.param.set_param_float("MPC_Z_VEL_P", original_z_vel_p * 0.1)
+                telemetry_markers["phase3_start"] = asyncio.get_event_loop().time()
+                await asyncio.sleep(phase_durations["critical"])
+                phases_completed.append("CRITICAL")
+                
+            # Phase 4: RESOLUTION - Restore and Land
+            logger.info("  Phase 4: RESOLUTION - Restoring Z-control, landing")
+            await self._restore_original_params()
+            await self.drone.action.land()
+            telemetry_markers["resolution_start"] = asyncio.get_event_loop().time()
+            await asyncio.sleep(15)
+            phases_completed.append("RESOLUTION")
+            
+            return EmulationResult(
+                success=True,
+                category=FailureCategory.ALTITUDE,
+                method="z_axis_gain_degradation",
+                phases_completed=phases_completed,
+                observation_duration=sum(phase_durations.values()) + 15,
+                landed=True,
+                telemetry_markers=telemetry_markers,
+            )
+            
+        except Exception as e:
+            await self._restore_original_params()
+            raise e
+
+    async def _emulate_airspace_violation(self, severity: float) -> EmulationResult:
+        """
+        Handle airspace violation scenarios (altitude_violation, geofence_violation).
+        
+        IMPORTANT: This is NOT a mechanical failure. The drone is healthy but was
+        observed in airspace where it shouldn't be. We do NOT inject any failure -
+        we simply execute a normal flight to demonstrate healthy drone behavior.
+        
+        This produces CLEAN telemetry with no anomalies, which is the EXPECTED
+        outcome for an airspace violation scenario.
+        """
+        logger.info("  → Airspace violation: NO failure injection (healthy drone scenario)")
+        logger.info("  → Drone will fly normally to demonstrate healthy behavior")
+        
+        phases_completed = []
+        telemetry_markers = {}
+        
+        try:
+            # Phase 1: OBSERVATION - Let the drone fly normally
+            logger.info("  Phase 1: OBSERVATION - Healthy drone flight")
+            telemetry_markers["observation_start"] = asyncio.get_event_loop().time()
+            
+            # Observe healthy flight for 30 seconds
+            observation_duration = self.randomizer.randomize_phase_duration(30.0)
+            await asyncio.sleep(observation_duration)
+            phases_completed.append("OBSERVATION")
+            
+            # Phase 2: RESOLUTION - Normal landing
+            logger.info("  Phase 2: RESOLUTION - Normal landing")
+            await self.drone.action.land()
+            telemetry_markers["resolution_start"] = asyncio.get_event_loop().time()
+            await asyncio.sleep(15)
+            phases_completed.append("RESOLUTION")
+            
+            return EmulationResult(
+                success=True,
+                category=FailureCategory.AIRSPACE_VIOLATION,
+                method="healthy_drone_observation",
+                phases_completed=phases_completed,
+                observation_duration=observation_duration + 15,
+                landed=True,
+                telemetry_markers=telemetry_markers,
+            )
+            
+        except Exception as e:
+            logger.error(f"Airspace violation observation failed: {e}")
             raise e

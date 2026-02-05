@@ -221,10 +221,39 @@ class TelemetryAnalyzer:
         roll = np.array([x.get('roll', x.get('roll_deg', 0)) for x in telemetry])
         pitch = np.array([x.get('pitch', x.get('pitch_deg', 0)) for x in telemetry])
         
-        # Convert from radians if values are small (PX4 sends radians)
-        if len(roll) > 0 and np.max(np.abs(roll)) < 2 * np.pi:
-            roll = roll * 57.3  # rad to deg
-            pitch = pitch * 57.3
+        # ROBUST CONVERSION: Handle mixed radian/degree data from PX4
+        # PX4/MAVSDK attitude_euler returns radians despite the _deg suffix
+        # However, during crash events, the telemetry can have large degree values
+        # 
+        # Heuristic: If median absolute value < π, most data is in radians
+        # This is more robust than checking max, as crash spikes don't affect median
+        def convert_to_degrees(arr):
+            """Convert radians to degrees, handling mixed format data."""
+            if len(arr) == 0:
+                return arr
+            
+            # Use median to determine predominant format (robust to outliers)
+            median_abs = np.median(np.abs(arr[arr != 0])) if np.any(arr != 0) else 0
+            
+            if median_abs < np.pi:
+                # Predominant format is radians - convert all
+                return arr * 57.2957795  # More precise rad->deg
+            else:
+                # Already in degrees (or mixed, keep as-is)
+                return arr
+        
+        roll = convert_to_degrees(roll)
+        pitch = convert_to_degrees(pitch)
+        
+        # CRITICAL FIX: Normalize angles to ±180° range to handle quaternion-to-euler
+        # conversion edge cases and telemetry wrap-around artifacts.
+        # Without normalization, values like 179.9° or 1070° can appear in reports.
+        def normalize_angles(angles):
+            """Normalize angles to [-180, 180] range using vectorized operations."""
+            return ((angles + 180) % 360) - 180
+        
+        roll = normalize_angles(roll)
+        pitch = normalize_angles(pitch)
         
         if len(roll) > 0:
             stats.max_roll_deg = float(np.max(np.abs(roll)))
@@ -265,10 +294,25 @@ class TelemetryAnalyzer:
                 stats.gps_variance_m = float(np.std(lat_valid) * 111000)
         
         # === SPEED ANALYSIS ===
-        speed = np.array([
-            x.get('groundspeed_m_s', x.get('velocity_m_s', x.get('speed', 0))) 
-            for x in telemetry
-        ])
+        # Try explicit speed fields first, then compute from NED velocity
+        speed_list = []
+        for x in telemetry:
+            # Check for explicit speed fields
+            spd = x.get('groundspeed_m_s', x.get('velocity_m_s', x.get('speed', None)))
+            if spd is not None and spd > 0:
+                speed_list.append(spd)
+            else:
+                # Compute horizontal speed from NED velocity components
+                vel_n = x.get('vel_n_m_s', 0)
+                vel_e = x.get('vel_e_m_s', 0)
+                vel_d = x.get('vel_d_m_s', 0)
+                if vel_n != 0 or vel_e != 0:
+                    # Horizontal groundspeed (ignoring vertical component)
+                    speed_list.append(np.sqrt(vel_n**2 + vel_e**2))
+                else:
+                    speed_list.append(0)
+        
+        speed = np.array(speed_list)
         if len(speed) > 0:
             stats.max_speed_mps = float(np.max(speed))
             stats.avg_speed_mps = float(np.mean(speed))

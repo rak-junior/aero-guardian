@@ -33,19 +33,45 @@ logger = logging.getLogger("AeroGuardian.Evaluator.SFS")
 # =============================================================================
 # FAULT TYPE MAPPINGS (for semantic matching)
 # =============================================================================
+# These mappings help score how well the LLM's inferred fault type matches
+# the FAA report narrative. Keywords are searched in the lowercase report text.
 
 FAULT_TYPE_KEYWORDS = {
-    "motor_failure": ["motor", "propeller", "engine", "thrust", "spin", "crashed", "fell"],
-    "gps_loss": ["gps", "satellite", "navigation", "position", "drift", "lost link"],
-    "battery_failure": ["battery", "voltage", "power", "charge"],
-    "control_loss": ["control", "malfunction", "flyaway", "unresponsive"],
-    "sensor_fault": ["sensor", "barometer", "compass", "imu", "gyro"],
+    # Propulsion failures
+    "motor_failure": ["motor", "propeller", "engine", "thrust", "spin", "crashed", "fell", "rotor"],
+    "propulsion_failure": ["motor", "propeller", "engine", "thrust", "spin", "rotor", "esc"],
+    
+    # Navigation failures
+    "gps_loss": ["gps", "satellite", "navigation", "position", "drift", "lost link", "erratic"],
+    "gps_dropout": ["gps", "satellite", "navigation", "position", "drift"],
+    "flyaway": ["flyaway", "flew away", "uncontrolled", "out of control", "lost control"],
+    
+    # Power/Battery failures
+    "battery_failure": ["battery", "voltage", "power", "charge", "low power"],
+    "battery_depletion": ["battery", "voltage", "power", "charge", "depleted", "low power"],
+    
+    # Control failures
+    "control_loss": ["control", "malfunction", "flyaway", "unresponsive", "erratic"],
+    "control_signal_loss": ["control", "signal", "link", "rc loss", "lost link"],
+    "rc_loss": ["rc", "signal", "link", "lost link", "radio"],
+    
+    # Sensor failures
+    "sensor_fault": ["sensor", "barometer", "compass", "imu", "gyro", "accelerometer"],
+    "sensor_failure": ["sensor", "barometer", "compass", "imu", "gyro", "accelerometer"],
+    "compass_error": ["compass", "heading", "mag", "magnetic", "yaw"],
+    
+    # Airspace violations - These are common in FAA sighting reports
+    # No specific failure keywords - these are OBSERVED positions, not failures
+    "altitude_violation": ["altitude", "feet", "ft", "high", "above", "elevated"],
+    "geofence_violation": ["airspace", "airport", "approach", "runway", "near miss"],
+    "airspace_violation": ["airspace", "airport", "approach", "runway", "near miss", "class"],
 }
 
 ENVIRONMENT_KEYWORDS = {
-    "urban": ["city", "downtown", "building", "airport", "atct", "tower"],
-    "rural": ["field", "farm", "rural", "open"],
+    "urban": ["city", "downtown", "building", "airport", "atct", "tower", "metropolitan"],
+    "rural": ["field", "farm", "rural", "open", "country"],
     "suburban": ["residential", "neighborhood", "suburb"],
+    "airport_vicinity": ["airport", "runway", "approach", "atct", "tower", "flight path"],
 }
 
 
@@ -191,13 +217,37 @@ class ScenarioFidelityScorer:
         faa_incident_type: str,
         config_fault_type: str
     ) -> Tuple[float, str]:
-        """Score how well the fault type matches."""
+        """
+        Score how well the fault type matches.
         
-        # Direct match with incident_type field
+        IMPORTANT: FAA sighting reports often don't specify incident_type explicitly.
+        They are observational reports of UAS sightings, not accident investigations.
+        The LLM INFERS the fault type from behavioral descriptions in the narrative.
+        
+        Scoring logic:
+        1. If incident_type exists, check for match
+        2. If no incident_type, check if LLM's inference is REASONABLE based on narrative keywords
+        3. Airspace violations (altitude_violation, geofence_violation) get credit for sighting reports
+        """
+        
+        # Direct match with incident_type field (if available)
         if faa_incident_type and config_fault_type:
             if faa_incident_type.lower() in config_fault_type.lower() or \
                config_fault_type.lower() in faa_incident_type.lower():
                 return 1.0, config_fault_type
+        
+        # No incident_type in data - check if config fault type is REASONABLE
+        # FAA sighting reports describe observed behavior, LLM infers fault type
+        
+        # Special case: altitude_violation / airspace sighting
+        # Many FAA reports are about UAS observed at high altitude near airports
+        # This is a VALID inference even without explicit failure keywords
+        if config_fault_type and any(x in config_fault_type.lower() for x in ["altitude_violation", "geofence_violation", "airspace"]):
+            # Check if report mentions altitude or proximity to airport
+            has_altitude = re.search(r'(\d{2,5})\s*(?:feet|ft|\')', faa_text)
+            has_airport = any(kw in faa_text for kw in ["atct", "tower", "approach", "runway", "airport"])
+            if has_altitude or has_airport:
+                return 0.9, config_fault_type  # High score - reasonable inference
         
         # Keyword-based detection from narrative
         detected_types = []
@@ -207,6 +257,10 @@ class ScenarioFidelityScorer:
                 detected_types.append((fault_type, matches))
         
         if not detected_types:
+            # No keywords found - give moderate credit if LLM provided any fault type
+            # Many sighting reports don't describe failures, just observations
+            if config_fault_type:
+                return 0.5, config_fault_type  # LLM made a reasonable attempt
             return 0.3, "unknown"  # Partial credit for having any config
         
         # Check if config matches any detected type

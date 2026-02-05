@@ -58,19 +58,41 @@ HAZARD_KEYWORDS = {
 
 # Universal safety recommendations that are valid for ANY critical/high severity failure
 # These don't need to match specific anomaly types - they are valid safety measures
+# EXPANDED 2026-02-03: Added more patterns to prevent 0.0 confidence on valid safety recommendations
+# TIGHTENED 2026-02-04: Require 2+ matches for high confidence, removed overly generic terms
 UNIVERSAL_SAFETY_KEYWORDS = [
+    # Recovery and failsafe systems (HIGH VALUE)
     "parachute",       # Recovery system - valid for any propulsion/control failure
-    "redundant",       # Redundancy - valid for any failure mode
-    "redundancy",
-    "backup",          # Backup systems
-    "failsafe",        # Failsafe systems
+    "failsafe",        # Failsafe systems (no hyphen)
+    "fail-safe",       # Failsafe systems (with hyphen)
+    "fail safe",       # Failsafe systems (with space)
     "recovery",        # Recovery mechanisms
     "emergency",       # Emergency procedures
-    "pre-flight",      # Pre-flight checks
-    "preflight",
-    "geofence",        # Containment systems
+    "backup",          # Backup systems
     "return to home",  # Return-to-home capability
     "rth",
+    
+    # Redundancy (HIGH VALUE)
+    "redundant",       # Redundancy - valid for any failure mode
+    "redundancy",
+    "dual",            # Dual systems
+    
+    # Pre-flight and inspection
+    "pre-flight",      # Pre-flight checks
+    "preflight",
+    "inspection",      # Inspection procedures
+    "checklist",       # Checklists
+    
+    # Containment and limits
+    "geofence",        # Containment systems
+    "geofencing",
+    "boundary",        # Boundary limits
+    "altitude limit",  # Specific altitude limits
+    
+    # Specific safety measures (more targeted)
+    "manual override", # Manual override capability
+    "kill switch",     # Kill switch
+    "termination",     # Flight termination
 ]
 
 
@@ -177,6 +199,15 @@ class EvidenceConsistencyChecker:
             anomaly_types
         )
         result.verified_claims.extend(constraint_claims)
+        
+        # 5. Verify causal consistency (NEW - for research-level diagnosis)
+        # Check if primary_failure_subsystem matches the earliest detected anomaly
+        causal_claim = self._verify_causal_consistency(
+            safety_report,
+            detected_anomalies
+        )
+        if causal_claim:
+            result.verified_claims.append(causal_claim)
         
         # Compute summary metrics
         result.total_claims = len(result.verified_claims)
@@ -344,15 +375,27 @@ class EvidenceConsistencyChecker:
                         break
             
             # Check for universal safety recommendations (valid for ANY critical/high failure)
+            # TIGHTENED 2026-02-04: Require 2+ matches for high confidence
             if not claim.is_supported and anomaly_types:
+                matched_keywords = []
                 for universal_keyword in UNIVERSAL_SAFETY_KEYWORDS:
                     if universal_keyword in rec_lower:
-                        claim.is_supported = True
-                        claim.supporting_evidence.append(
-                            f"Universal safety measure '{universal_keyword}' valid for detected anomalies"
-                        )
-                        claim.confidence = 0.85  # High confidence for proven safety measures
-                        break
+                        matched_keywords.append(universal_keyword)
+                
+                if len(matched_keywords) >= 2:
+                    # Multiple high-value safety keywords = high confidence
+                    claim.is_supported = True
+                    claim.supporting_evidence.append(
+                        f"Multiple safety measures: {', '.join(matched_keywords[:3])}"
+                    )
+                    claim.confidence = 0.85
+                elif len(matched_keywords) == 1:
+                    # Single keyword = moderate confidence (was 0.85, now conservative)
+                    claim.is_supported = True
+                    claim.supporting_evidence.append(
+                        f"Universal safety measure '{matched_keywords[0]}' valid for detected anomalies"
+                    )
+                    claim.confidence = 0.65  # Conservative for single match
             
             # Generic safety recommendations get partial credit
             if not claim.is_supported:
@@ -409,6 +452,123 @@ class EvidenceConsistencyChecker:
             claims.append(claim)
         
         return claims
+    
+    def _verify_causal_consistency(
+        self,
+        safety_report: Dict,
+        detected_anomalies: List[Dict]
+    ) -> ClaimVerification:
+        """
+        Verify that primary_failure_subsystem claim matches temporal ordering of anomalies.
+        
+        This is critical for research-level causal diagnosis:
+        - The claimed primary failure subsystem must be the one that failed FIRST
+        - If anomalies have temporal ordering, we can validate the claim
+        
+        Args:
+            safety_report: Generated safety report
+            detected_anomalies: List of anomalies with subsystem and timing info
+            
+        Returns:
+            ClaimVerification or None if no causal claim to verify
+        """
+        # Check if report has causal fields to verify
+        claimed_subsystem = (
+            safety_report.get("primary_failure_subsystem") or
+            safety_report.get("causal_analysis", {}).get("primary_failure_subsystem")
+        )
+        
+        if not claimed_subsystem:
+            # No causal claim to verify - skip this check
+            return None
+        
+        claim = ClaimVerification(
+            claim_type="causal_consistency",
+            claim_text=f"Primary failure subsystem: {claimed_subsystem}"
+        )
+        
+        # Get anomalies with subsystem and timing info
+        anomalies_with_subsystem = [
+            a for a in detected_anomalies 
+            if a.get("subsystem") and a.get("subsystem") != "unknown"
+        ]
+        
+        if not anomalies_with_subsystem:
+            # No subsystem-tagged anomalies - cannot verify
+            claim.is_supported = True  # Give benefit of doubt
+            claim.confidence = 0.5
+            claim.supporting_evidence.append(
+                "No subsystem-tagged anomalies available for causal verification"
+            )
+            return claim
+        
+        # Find earliest anomaly per subsystem (for temporal ordering verification)
+        subsystem_first_times = {}
+        for anomaly in anomalies_with_subsystem:
+            subsystem = anomaly.get("subsystem", "")
+            time = anomaly.get("first_detected_sec", float('inf'))
+            
+            if subsystem not in subsystem_first_times:
+                subsystem_first_times[subsystem] = time
+            else:
+                subsystem_first_times[subsystem] = min(
+                    subsystem_first_times[subsystem], 
+                    time
+                )
+        
+        # Handle "ambiguous" subsystems - skip them for primary determination
+        non_ambiguous = {
+            k: v for k, v in subsystem_first_times.items() 
+            if k not in ("ambiguous", "unknown")
+        }
+        
+        if not non_ambiguous:
+            # All anomalies are ambiguous - cannot verify
+            claim.is_supported = True
+            claim.confidence = 0.4
+            claim.supporting_evidence.append(
+                "All detected anomalies are ambiguous - cannot determine temporal ordering"
+            )
+            return claim
+        
+        # Find subsystem with earliest anomaly
+        earliest_subsystem = min(non_ambiguous, key=non_ambiguous.get)
+        earliest_time = non_ambiguous[earliest_subsystem]
+        
+        # Normalize claimed subsystem for comparison
+        claimed_normalized = claimed_subsystem.lower().strip()
+        
+        # Handle "undetermined" - this is always valid if evidence is weak
+        if claimed_normalized == "undetermined":
+            claim.is_supported = True
+            claim.confidence = 0.6  # Admitting uncertainty is scientifically valid
+            claim.supporting_evidence.append(
+                f"Report correctly acknowledges undetermined root cause. "
+                f"Earliest anomaly in '{earliest_subsystem}' at t={earliest_time:.1f}s"
+            )
+            return claim
+        
+        # Check if claimed subsystem matches earliest
+        if claimed_normalized == earliest_subsystem:
+            claim.is_supported = True
+            claim.confidence = 1.0
+            claim.supporting_evidence.append(
+                f"Causal claim verified: '{claimed_subsystem}' showed first anomaly at t={earliest_time:.1f}s"
+            )
+        else:
+            claim.is_supported = False
+            claim.confidence = 0.0
+            claim.supporting_evidence.append(
+                f"Causal MISMATCH: Report claims '{claimed_subsystem}' but "
+                f"'{earliest_subsystem}' showed first anomaly at t={earliest_time:.1f}s. "
+                f"Claimed subsystem anomaly at t={subsystem_first_times.get(claimed_normalized, 'N/A')}s"
+            )
+            logger.warning(
+                f"Causal inconsistency: claimed={claimed_subsystem}, "
+                f"earliest={earliest_subsystem} @ t={earliest_time:.1f}s"
+            )
+        
+        return claim
     
     def _compute_evidence_strength(
         self,

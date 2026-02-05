@@ -389,8 +389,9 @@ class FAAProcessor:
             all_incidents.extend(incidents)
         
         # Sort: ACTUAL_FAILURE first, then HIGH_RISK_SIGHTING
+        # Sort: ACTUAL_FAILURE first, then HIGH_RISK_SIGHTING
         all_incidents.sort(
-            key=lambda x: (0 if x["classification"] == "ACTUAL_FAILURE" else 1, x["incident_id"])
+            key=lambda x: (0 if x.get("classification", "ACTUAL_FAILURE") == "ACTUAL_FAILURE" else 1, x["report_id"])
         )
         
         # Save output
@@ -537,27 +538,22 @@ class FAAProcessor:
         # Extract altitude
         altitude = self.classifier.parse_altitude(summary)
         
-        # Create record
-        incident_id = f"{filepath.stem}_{idx + 1}"
+        # Create record - IMPORTANT: Preserve ALL classification metadata
+        report_id = f"{filepath.stem}_{idx + 1}"
         return {
-            "incident_id": incident_id,
+            "report_id": report_id,
             "date": date_str,
             "city": city.upper(),
             "state": state.upper(),
-            "summary": summary,
             "description": summary,
-            "altitude": altitude,
-            "altitude_m": altitude,
-            "uas_type": "",
-            "classification": classification,
+            # Classification metadata (CRITICAL: Do not discard these!)
+            "classification": classification,  # ACTUAL_FAILURE or HIGH_RISK_SIGHTING
+            "fault_type": fault_type,  # LLM can override, but provides initial hint
             "classification_confidence": confidence,
-            "incident_type": fault_type,
-            "source_file": filepath.name,
+            "altitude_m": altitude if altitude else None,
+            # Fault type metadata from FAULT_TYPES dict
             "hazard_category": fault_info.hazard_category,
-            "px4_fault_type": fault_info.px4_fault_type,
             "hazard_description": fault_info.hazard_description,
-            "default_severity": fault_info.default_severity,
-            "is_simulatable": True,
         }
     
     def _format_date(self, date_val: Any) -> str:
@@ -582,12 +578,6 @@ class FAAProcessor:
         logger.info("GENERATING OUTPUT FILES")
         logger.info("=" * 60)
         
-        self.config.output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Count by classification
-        actual_failures = [i for i in incidents if i["classification"] == "ACTUAL_FAILURE"]
-        high_risk = [i for i in incidents if i["classification"] == "HIGH_RISK_SIGHTING"]
-        
         # 1. Full incidents file
         full_output = {
             "version": "1.0",
@@ -595,15 +585,7 @@ class FAAProcessor:
             "description": "FAA incidents processed for AeroGuardian pre-flight safety analysis",
             "statistics": {
                 "total_raw_records": self.stats["total_raw"],
-                "actual_failures": self.stats["ACTUAL_FAILURE"],
-                "high_risk_sightings": self.stats["HIGH_RISK_SIGHTING"],
-                "normal_sightings_excluded": self.stats["NORMAL_SIGHTING"],
                 "simulatable_total": len(incidents),
-            },
-            "by_fault_type": dict(self.stats["by_fault_type"].most_common()),
-            "by_classification": {
-                "ACTUAL_FAILURE": len(actual_failures),
-                "HIGH_RISK_SIGHTING": len(high_risk),
             },
             "incidents": incidents,
         }
@@ -621,13 +603,6 @@ class FAAProcessor:
             "original_total": self.stats["total_raw"],
             "simulatable_total": len(incidents),
             "filter_rate": f"{len(incidents) / max(self.stats['total_raw'], 1) * 100:.1f}%",
-            "simulatable_types": list(FAULT_TYPES.keys()),
-            "by_hazard_category": dict(Counter(i["hazard_category"] for i in incidents).most_common()),
-            "by_incident_type": dict(self.stats["by_fault_type"].most_common()),
-            "by_classification": {
-                "ACTUAL_FAILURE": len(actual_failures),
-                "HIGH_RISK_SIGHTING": len(high_risk),
-            },
             "incidents": incidents,
         }
         
@@ -635,26 +610,69 @@ class FAAProcessor:
         with open(sim_path, 'w', encoding='utf-8') as f:
             json.dump(simulatable_output, f, indent=2, ensure_ascii=False)
         logger.info(f"✓ Saved: {sim_path} ({len(incidents)} incidents)")
-    
+        
+        # 3. CRITICAL: Actual failures ONLY file (for competition demos)
+        # These are the 31 cases with REAL drone malfunctions - highest credibility
+        actual_failures = [i for i in incidents if i.get("classification") == "ACTUAL_FAILURE"]
+        actual_output = {
+            "version": "1.0",
+            "generated_at": datetime.now().isoformat(),
+            "description": "FAA incidents with CONFIRMED drone malfunctions (crashes, flyaways, malfunctions) - highest credibility subset",
+            "data_quality_note": "These cases contain explicit evidence of drone failure (operator stated, crashed, malfunctioned, etc.) unlike HIGH_RISK_SIGHTING which are just altitude/proximity sightings.",
+            "competition_note": "Use this dataset for demos - these are real failures, not hypothetical scenarios.",
+            "total_failures": len(actual_failures),
+            "incidents": actual_failures,
+        }
+        
+        actual_path = self.config.output_dir / "faa_actual_failures.json"
+        with open(actual_path, 'w', encoding='utf-8') as f:
+            json.dump(actual_output, f, indent=2, ensure_ascii=False)
+        logger.info(f"✓ Saved: {actual_path} ({len(actual_failures)} ACTUAL_FAILURE incidents)")
+        
+        # 4. High-risk sightings file (hypothetical scenarios)
+        high_risk = [i for i in incidents if i.get("classification") == "HIGH_RISK_SIGHTING"]
+        high_risk_output = {
+            "version": "1.0",
+            "generated_at": datetime.now().isoformat(),
+            "description": "FAA sightings in high-risk situations (altitude/proximity) - hypothetical failure scenarios",
+            "data_quality_note": "These are NOT confirmed failures. They are sightings where a drone was observed in a situation that COULD indicate a problem (high altitude, near runway, etc.) but likely was just normal operation.",
+            "total_sightings": len(high_risk),
+            "incidents": high_risk,
+        }
+        
+        high_risk_path = self.config.output_dir / "faa_high_risk_sightings.json"
+        with open(high_risk_path, 'w', encoding='utf-8') as f:
+            json.dump(high_risk_output, f, indent=2, ensure_ascii=False)
+        logger.info(f"✓ Saved: {high_risk_path} ({len(high_risk)} HIGH_RISK_SIGHTING incidents)")
+
     def _print_summary(self, incidents: List[Dict[str, Any]]) -> None:
-        """Print processing summary."""
-        actual_failures = [i for i in incidents if i["classification"] == "ACTUAL_FAILURE"]
-        high_risk = [i for i in incidents if i["classification"] == "HIGH_RISK_SIGHTING"]
+        """Print summary statistics."""
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("PROCESSING COMPLETE")
+        logger.info("=" * 60)
+        logger.info(f"Total raw records: {self.stats['total_raw']}")
+        logger.info(f"ACTUAL_FAILURE: {self.stats['ACTUAL_FAILURE']}")
+        logger.info(f"HIGH_RISK_SIGHTING: {self.stats['HIGH_RISK_SIGHTING']}")
+        logger.info(f"NORMAL_SIGHTING: {self.stats['NORMAL_SIGHTING']}")
+        logger.info(f"Simulatable total: {len(incidents)}")
+        
+        logger.info("By fault type (Internal Classification):")
+        for ftype, count in self.stats["by_fault_type"].most_common():
+            logger.info(f"  {ftype}: {count}")
+        
+        logger.info("✓ Data ready for AeroGuardian pipeline!")
+    
         
         logger.info("")
         logger.info("=" * 60)
         logger.info("PROCESSING COMPLETE")
         logger.info("=" * 60)
         logger.info(f"Total raw records: {self.stats['total_raw']}")
-        logger.info(f"ACTUAL_FAILURE: {self.stats['ACTUAL_FAILURE']} → {len(actual_failures)} included")
-        logger.info(f"HIGH_RISK_SIGHTING: {self.stats['HIGH_RISK_SIGHTING']} → {len(high_risk)} included")
-        logger.info(f"NORMAL_SIGHTING: {self.stats['NORMAL_SIGHTING']} → EXCLUDED")
+        logger.info(f"ACTUAL_FAILURE: {self.stats['ACTUAL_FAILURE']}")
+        logger.info(f"HIGH_RISK_SIGHTING: {self.stats['HIGH_RISK_SIGHTING']}")
+        logger.info(f"NORMAL_SIGHTING: {self.stats['NORMAL_SIGHTING']}")
         logger.info(f"Simulatable total: {len(incidents)}")
-        
-        if actual_failures:
-            logger.info(f"  - ACTUAL_FAILURE at front (index 0-{len(actual_failures)-1})")
-        if high_risk:
-            logger.info(f"  - HIGH_RISK_SIGHTING (index {len(actual_failures)}-{len(incidents)-1})")
         
         logger.info("By fault type:")
         for ftype, count in self.stats["by_fault_type"].most_common():

@@ -20,9 +20,7 @@ MODULE_ROOT = Path(__file__).parent
 from .sighting_filter import (
     SightingFilter,
     get_sighting_filter,
-    parse_altitude_from_text,
-    SIMULATABLE_TYPES,
-    FAILURE_KEYWORDS,
+
 )
 
 # Backward compatibility aliases (deprecated - will be removed in future versions)
@@ -33,9 +31,7 @@ __all__ = [
     # Primary exports
     "SightingFilter",
     "get_sighting_filter",
-    "parse_altitude_from_text",
-    "SIMULATABLE_TYPES",
-    "FAILURE_KEYWORDS",
+
     # Deprecated aliases
     "IncidentFilter",
     "get_incident_filter",
