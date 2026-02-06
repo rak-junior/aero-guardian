@@ -529,6 +529,70 @@ class BenchmarkRunner:
         
         return metrics
     
+    def run_rflymad_only(self, sample_fraction: float = 1.0) -> Dict:
+        """
+        Run validation on RflyMAD dataset only.
+        
+        RflyMAD (Beihang University) is the primary benchmark for competition:
+        - 1,424 flights, 1.4M samples
+        - Quadrotor-specific (matches PX4 simulations)
+        - 3 fault types: motor, sensor, wind
+        - Expected F1: ~75% with current thresholds
+        
+        Note: ALFA is excluded due to domain mismatch (fixed-wing data → F1=7.7%)
+        """
+        results = {
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'sample_fraction': sample_fraction,
+            'datasets': {},
+            'summary': {},
+            'mode': 'rflymad_only',
+        }
+        
+        logger.info("Running RflyMAD-only validation (competition mode)...")
+        
+        try:
+            rflymad_df = self.loader.load_rflymad(sample_fraction)
+            rflymad_metrics = self.run_dataset(rflymad_df, "RflyMAD")
+            results['datasets']['RflyMAD'] = {
+                'total_flights': rflymad_metrics.total_flights,
+                'total_samples': rflymad_metrics.total_samples,
+                'precision': rflymad_metrics.precision,
+                'recall': rflymad_metrics.recall,
+                'f1_score': rflymad_metrics.f1_score,
+                'avg_detection_latency_s': rflymad_metrics.avg_detection_latency_s,
+                'avg_processing_time_ms': rflymad_metrics.avg_processing_time_ms,
+                'fault_types': rflymad_metrics.fault_type_metrics,
+                'confusion_matrix': {
+                    'tp': rflymad_metrics.true_positives,
+                    'tn': rflymad_metrics.true_negatives,
+                    'fp': rflymad_metrics.false_positives,
+                    'fn': rflymad_metrics.false_negatives,
+                }
+            }
+            logger.info(f"RflyMAD: P={rflymad_metrics.precision:.3f}, R={rflymad_metrics.recall:.3f}, F1={rflymad_metrics.f1_score:.3f}")
+            
+            # Summary is just RflyMAD metrics
+            results['summary'] = {
+                'overall_precision': rflymad_metrics.precision,
+                'overall_recall': rflymad_metrics.recall,
+                'overall_f1_score': rflymad_metrics.f1_score,
+                'total_samples_validated': rflymad_metrics.total_samples,
+                'total_flights_validated': rflymad_metrics.total_flights,
+            }
+        except Exception as e:
+            logger.error(f"RflyMAD validation failed: {e}")
+            results['datasets']['RflyMAD'] = {'error': str(e)}
+            results['summary'] = {
+                'overall_precision': 0,
+                'overall_recall': 0,
+                'overall_f1_score': 0,
+                'total_samples_validated': 0,
+                'total_flights_validated': 0,
+            }
+        
+        return results
+    
     def run_all(self, sample_fraction: float = 1.0) -> Dict:
         """Run validation on all available datasets."""
         
@@ -927,6 +991,8 @@ def main():
                         help="Run threshold calibration instead of validation")
     parser.add_argument("--compare-px4", action="store_true",
                         help="Compare PX4 telemetry to benchmark datasets")
+    parser.add_argument("--rflymad-only", action="store_true",
+                        help="Run validation on RflyMAD dataset only (recommended for competition demo)")
     parser.add_argument("--output", "-o", type=str, default=None,
                         help="Output directory (default: outputs/verification)")
     
@@ -968,7 +1034,13 @@ def main():
             sys.exit(1)
         
         runner = BenchmarkRunner(data_dir, output_dir)
-        results = runner.run_all(sample_fraction=args.sample)
+        
+        # Use --rflymad-only for competition demo (skips ALFA due to domain mismatch)
+        if getattr(args, 'rflymad_only', False):
+            results = runner.run_rflymad_only(sample_fraction=args.sample)
+            logger.info("Running RflyMAD-only mode (competition demo)")
+        else:
+            results = runner.run_all(sample_fraction=args.sample)
         
         # Add PX4 comparison to results
         px4_comparison = compare_px4_to_benchmarks(data_dir, output_dir)

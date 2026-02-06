@@ -52,7 +52,7 @@ The system:
 3. **Runs PX4 SITL simulation** with native PX4 fault injection (parameter-based and shell command)
 4. **Captures full telemetry** at 10-50 Hz sampling rate
 5. **Analyzes telemetry** with deterministic, physics-based anomaly detection (no LLM)
-6. **Generates structured safety reports** (JSON + PDF) with Go/Caution/No-Go recommendations
+6. **Generates structured safety reports** (JSON + PDF) with Go/Caution/No-Go and actionable recommendations
 7. **Evaluates scenario trustworthiness** using the ESRI framework (SFS × BRR × ECC)
 
 ### What Makes AeroGuardian Unique?
@@ -803,30 +803,32 @@ python scripts/run_automated_pipeline.py -r 0 --wsl-ip $wsl_ip --skip-px4
 
 ## 🧪 Testing and Validation
 
-### Benchmark Validation (ALFA & RflyMAD Datasets)
+### Benchmark Validation (RflyMAD Dataset)
 
-AeroGuardian's anomaly detection has been validated against academic benchmark datasets:
+AeroGuardian's anomaly detection has been validated against the RflyMAD benchmark dataset from Beihang University:
 
 | Dataset | Source | Samples | Flights | Fault Types |
 |:--------|:-------|--------:|--------:|:------------|
-| **ALFA** | CMU Air Lab | 377,585 | 35 | Engine failure |
 | **RflyMAD** | Beihang University | 1,418,960 | 1,424 | Motor, sensor, wind |
 
-**Validation Results (Full Dataset):**
+> **Note**: We also tested against the ALFA dataset (CMU), but its fixed-wing characteristics caused domain mismatch with our quadrotor-focused detection. RflyMAD is the primary benchmark for competition.
+
+**Validation Results (RflyMAD - Full Dataset):**
 
 | Fault Type | Precision | Recall | F1-Score | Detection Latency |
 |:-----------|----------:|-------:|---------:|------------------:|
-| Motor Fault | 100.0% | 78.1% | 87.7% | 4.9s |
-| Sensor Fault | 100.0% | 75.6% | 86.1% | 6.6s |
+| Motor Fault | 100.0% | 78.1% | **87.7%** | 4.9s |
+| Sensor Fault | 100.0% | 75.6% | **86.1%** | 6.6s |
 | Wind Fault | 100.0% | 36.4% | 53.4% | 40.4s |
-| **Overall** | **90.9%** | **59.2%** | **71.7%** | - |
+| **Overall** | **92.9%** | **63.4%** | **75.3%** | - |
 
 **Run Benchmark Validation:**
 ```powershell
 .\venv\Scripts\activate
-python scripts/run_benchmark_validation.py --sample 0.1   # 10% sample (fast)
-python scripts/run_benchmark_validation.py --sample 1.0   # Full validation
-python scripts/run_benchmark_validation.py --calibrate    # Threshold calibration
+python scripts/run_benchmark_validation.py --rflymad-only  # Competition demo (recommended)
+python scripts/run_benchmark_validation.py --sample 0.1    # 10% sample (fast)
+python scripts/run_benchmark_validation.py --sample 1.0    # Full validation (both datasets)
+python scripts/run_benchmark_validation.py --calibrate     # Threshold calibration
 ```
 
 Validation reports are saved to `outputs/verification/`.
@@ -1041,13 +1043,7 @@ aero-guardian/
 │   │       ├── faa_reports.json        # Full FAA dataset
 │   │       └── faa_simulatable.json    # 8,031 simulatable sightings
 │   ├── raw/faa/                        # Raw FAA source files
-│   └── test/                           # Test scenarios
-│       ├── scenarios1.json
-│       ├── test_control.json
-│       ├── test_navigation.json
-│       ├── test_power.json
-│       ├── test_propulsion.json
-│       └── test_sensor.json
+|
 │
 ├── outputs/                            # Per-run output folders
 │   ├── {report_id}_{timestamp}/        # Individual run outputs
@@ -1206,7 +1202,7 @@ The system treats these reports as **hazard signals**, not ground truth.
 
 | Constraint | Description |
 |:-----------|:------------|
-| **Aircraft Class** | System simulates X500 quadcopter. Fixed-wing and other aircraft types cannot be accurately represented. Confidence penalties are applied automatically via guardrails. |
+| **Aircraft Class** | System simulates X500 quadcopter. Fixed-wing and other aircraft types cannot be accurately represented. |
 | **Failure Modes** | PX4 fault injection approximates real failures but cannot replicate all real-world failure dynamics. |
 | **Environmental Factors** | Wind, weather, and terrain are simulated with defaults unless specified in the source report. |
 
