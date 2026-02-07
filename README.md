@@ -632,7 +632,7 @@ cd /mnt/c/path/to/aero-guardian/scripts
 
 # Make setup script executable and run
 chmod +x setup_px4_gui.sh
-./setup_px4_gui.sh --install-deps --install-px4
+./setup_px4_gui.sh --install-deps --install-px4 --install-gazebo
 ```
 
 ### Step 4: Verify Installation
