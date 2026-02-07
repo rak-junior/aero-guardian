@@ -1,33 +1,23 @@
 """
 AeroGuardian Automated Pipeline Runner
 ======================================
-Author: AeroGuardian Team (Tiny Coders)
+Author: AeroGuardian Member
 Date: 2026-01-19
-Updated: 2026-02-04
-Version: 2.0
+Updated: 2026-01-31
+Version: 1.0
 
-Fully automated pipeline that runs the complete AeroGuardian workflow:
-
-PIPELINE STEPS:
-1. Load FAA UAS sighting report from processed dataset
-2. Generate PX4 simulation config via LLM #1 (GPT-4o + DSPy)
-3. Start PX4 SITL with Gazebo (Harmonic or Classic) in WSL2
-4. Execute flight mission with fault injection
-5. Capture telemetry at 10-50Hz (IMU, GPS, motors)
-6. Analyze telemetry with physics-based anomaly detection
-7. Generate safety report via LLM #2 (GPT-4o + DSPy)
-8. Evaluate output with ESRI framework (SFS × BRR × ECC)
-9. Save reports (PDF, JSON, Excel)
-
-SUPPORTED SIMULATORS:
-- gz_x500: Gazebo Harmonic X500 quadcopter (recommended)
-- gazebo-classic_iris: Gazebo Classic Iris quadcopter
-- sihsim_quadx: Software-In-Hardware (no physics, fastest)
+Fully automated pipeline that runs everything without user input:
+1. Start PX4 SITL with Gazebo GUI in WSL
+2. Connect to QGroundControl at configurable IP:port
+3. Load FAA UAS sighting report and generate configuration via LLM
+4. Execute flight mission and capture telemetry
+5. Generate safety reports (PDF/JSON) & Evaluation report (Excel/JSON)
 
 Usage:
-    python scripts/run_automated_pipeline.py -r 0 --wsl-ip 172.x.x.x --headless -s gz_x500
-    python scripts/run_automated_pipeline.py -r 5 --wsl-ip 172.x.x.x -s gazebo-classic_iris
-    python scripts/run_automated_pipeline.py --skip-px4  # If PX4 already running
+    python scripts/run_automated_pipeline.py                    # Default: sighting 0
+    python scripts/run_automated_pipeline.py -r 5               # Specific sighting
+    python scripts/run_automated_pipeline.py --headless         # No Gazebo GUI
+    python scripts/run_automated_pipeline.py --skip-px4         # Skip PX4 startup (already running)
 """
 
 import os
@@ -106,14 +96,6 @@ class PipelineConfig:
     world: str = "empty"
     headless: bool = False
     
-    # Simulator selection
-    # Options: "auto", "sihsim_quadx", "gz_x500", "gazebo-classic_iris"
-    # auto: Uses sihsim_quadx for headless, gz_x500 for GUI
-    # sihsim_quadx: SIH simulator - fast, headless only, no failure injection
-    # gz_x500: Gazebo Harmonic - GUI, limited failure injection on WSL2
-    # gazebo-classic_iris: Gazebo Classic - GUI, FULL failure injection (requires submodule init)
-    simulator: str = "auto"
-    
     # Output
     output_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "outputs")
 
@@ -166,94 +148,12 @@ class WSLController:
         return self._windows_ip or "172.27.160.1"
     
     def is_px4_running(self) -> bool:
-        """
-        Check if PX4 SITL is actually running (not zombie/suspended).
-        
-        Uses ps to check process state - only 'R' (running) or 'S' (sleeping) are valid.
-        Processes in 'T' (stopped) or 'Z' (zombie) state are not functional.
-        """
-        # Check for running px4 process using awk to filter by STAT column (column 8)
-        # STAT column shows: R=running, S=sleeping, T=stopped, Z=zombie
-        # We want only R or S states (start with R or S, may have modifiers like Ss, S+)
-        code, output = self.run_wsl(
-            "ps aux | grep -E 'px4.*sitl|bin/px4' | grep -v grep | awk '$8 ~ /^[RS]/ {print; exit}'",
-            timeout=5
-        )
-        if code == 0 and output.strip():
-            logger.info(f"Found running PX4 process: {output.strip()[:100]}")
-            return True
-        
-        # Also check if there are zombie/stopped processes (for logging)
-        code2, output2 = self.run_wsl(
-            "ps aux | grep -E 'px4.*sitl|bin/px4' | grep -v grep | awk '$8 ~ /^[TZ]/ {print}'",
-            timeout=5
-        )
-        if code2 == 0 and output2.strip():
-            logger.warning(f"Found zombie/stopped PX4 (will clean up): {output2.strip()[:80]}")
-        
-        return False
-    
-    def cleanup_stale_processes(self):
-        """Kill any zombie/suspended PX4/Gazebo processes."""
-        logger.debug("Cleaning up stale simulation processes...")
-        self.run_wsl("pkill -9 px4 2>/dev/null; pkill -9 gz 2>/dev/null; pkill -9 ruby 2>/dev/null", timeout=5)
-        time.sleep(1)
-    
-    def _validate_simulator_target(self, requested: str) -> str:
-        """
-        Validate simulator target and return a valid alternative if needed.
-        
-        PX4 simulator targets:
-        - Modern PX4 (v1.14+): gz_x500, sihsim_quadx
-        - Legacy: gazebo-classic_iris (requires gazebo-classic submodule)
-        
-        Returns the best available simulator target.
-        """
-        # Known valid targets in order of preference for fault injection
-        VALID_TARGETS = [
-            "gz_x500",           # Gazebo Harmonic - best for modern setups
-            "sihsim_quadx",      # SIH - always works, limited fault injection
-        ]
-        
-        # Mapping from legacy names to valid targets
-        LEGACY_MAPPING = {
-            "gazebo-classic_iris": "gz_x500",
-            "gazebo_iris": "gz_x500",
-            "gazebo-classic": "gz_x500",
-            "jmavsim": "sihsim_quadx",
-        }
-        
-        # If requesting a known legacy target, map it
-        if requested in LEGACY_MAPPING:
-            mapped = LEGACY_MAPPING[requested]
-            logger.warning(f"  Simulator '{requested}' not available in your PX4 build")
-            logger.warning(f"  → Using '{mapped}' instead (Gazebo Harmonic)")
-            return mapped
-        
-        # Check if requested target is in the valid list
-        if requested in VALID_TARGETS:
-            return requested
-        
-        # For unknown targets, try to validate with a quick build test
-        logger.info(f"  Validating simulator target: {requested}")
-        code, output = self.run_wsl(
-            f"cd ~/PX4-Autopilot && ninja -t targets 2>/dev/null | grep -q '{requested}' && echo 'valid' || echo 'invalid'",
-            timeout=15
-        )
-        
-        if "valid" in output:
-            return requested
-        
-        # Unknown and invalid - fall back to gz_x500
-        logger.warning(f"  Simulator '{requested}' not found in PX4 build")
-        logger.warning(f"  → Falling back to 'gz_x500'")
-        return "gz_x500"
+        """Check if PX4 SITL is running."""
+        code, _ = self.run_wsl("pgrep -f 'px4.*sitl'", timeout=5)
+        return code == 0
     
     def start_px4_gazebo(self) -> bool:
         """Start PX4 SITL with Gazebo."""
-        # First cleanup any stale processes
-        self.cleanup_stale_processes()
-        
         if self.is_px4_running():
             logger.info("PX4 SITL is already running")
             return True
@@ -263,21 +163,16 @@ class WSLController:
         # Get Windows IP for DISPLAY (in case Gazebo is needed)
         windows_ip = self.get_windows_ip()
         
-        # Choose simulator target based on config or auto-select
-        # Simulator options:
-        # - sihsim_quadx: Software-in-the-loop, no graphics (headless), no failure injection
-        # - gazebo-classic_iris: Gazebo Classic, FULL failure injection (requires submodule init)
-        # - gz_x500: Gazebo Harmonic, limited failure injection on WSL2
-        if self.config.simulator == "auto":
-            if self.config.headless:
-                sim_target = "sihsim_quadx"  # SIH simulator - no graphics, fast
-            else:
-                sim_target = "gz_x500"  # Gazebo Harmonic - GUI with X500 drone
+        # Choose simulator target:
+        # - sihsim_quadx: Software-in-the-loop, no graphics needed (headless friendly)
+        # - gazebo-classic_iris: Gazebo Classic with iris drone - SUPPORTS FAILURE INJECTION
+        #                        (requires: git submodule update --init --recursive Tools/simulation/gazebo-classic)
+        # - gz_x500: Gazebo Harmonic with X500 drone (limited failure injection support)
+        # NOTE: Using gz_x500 because Gazebo Classic submodule is not initialized
+        if self.config.headless:
+            sim_target = "sihsim_quadx"  # SIH simulator - no graphics
         else:
-            # Validate user-specified simulator and provide fallback
-            sim_target = self._validate_simulator_target(self.config.simulator)
-        
-        logger.info(f"  Simulator: {sim_target}")
+            sim_target = "gz_x500"  # Gazebo Harmonic - fallback to crash simulation for failures
         
         # Get home location if set (from incident geocoding)
         home_lat = getattr(self, '_home_lat', 47.397742)  # Default: Switzerland test location
@@ -287,15 +182,6 @@ class WSLController:
         # For WSLg, use :0 directly; for VcXsrv use windows_ip:0
         # WSLg is default on Windows 11
         display_env = ":0"  # WSLg default
-        
-        # Gazebo Harmonic (gz_x500) requires additional setup
-        is_gazebo_harmonic = "gz_x500" in sim_target or "gz_" in sim_target
-        headless_arg = "" if not self.config.headless else "HEADLESS=1"
-        
-        if is_gazebo_harmonic:
-            logger.info("  Mode: Gazebo Harmonic (gz sim)")
-            if self.config.headless:
-                logger.info("  GUI: Disabled (headless mode)")
         
         launch_cmd = f"""
             pkill -9 px4 2>/dev/null || true
@@ -308,14 +194,9 @@ class WSLController:
             source ~/.bashrc 2>/dev/null || true
             source /opt/ros/*/setup.bash 2>/dev/null || true
             
-            # Display for Gazebo GUI (WSLg on Windows 11)
+            # Display for Gazebo GUI
             export DISPLAY={display_env}
             export LIBGL_ALWAYS_SOFTWARE=1
-            
-            # Gazebo Harmonic specific environment (for gz_x500)
-            export GZ_SIM_SYSTEM_PLUGIN_PATH=$HOME/PX4-Autopilot/build/px4_sitl_default/build_gz_plugins
-            export GZ_SIM_RESOURCE_PATH=$HOME/PX4-Autopilot/Tools/simulation/gz/models:$GZ_SIM_RESOURCE_PATH
-            export GZ_VERSION=harmonic
             
             # PX4 configuration
             export PX4_SIM_HOST_ADDR={self.config.wsl_ip}
@@ -323,23 +204,23 @@ class WSLController:
             export PX4_HOME_LON={home_lon}
             export PX4_HOME_ALT={home_alt}
             
-            # ENABLE FAILURE INJECTION for PX4
-            # This allows MAVSDK failure.inject() and shell 'failure' commands to work
+            # ENABLE FAILURE INJECTION for demo
+            # This allows MAVSDK failure.inject() to work
             export PX4_SYS_FAILURE_EN=1
             
-            # Set Gazebo world (default, baylands, etc.)
+            # Set Gazebo world (default, baylands, forest, lawn, windy, etc.)
             export PX4_GZ_WORLD=default
             
             # Gazebo model paths (for both Classic and Harmonic)
             export GAZEBO_MODEL_PATH=$HOME/PX4-Autopilot/Tools/simulation/gazebo-classic/sitl_gazebo-classic/models:$GAZEBO_MODEL_PATH
+            export GZ_SIM_RESOURCE_PATH=$HOME/PX4-Autopilot/Tools/simulation/gz/models:$GZ_SIM_RESOURCE_PATH
             
-            # Headless mode for Gazebo (no GUI)
-            {'export HEADLESS=1' if self.config.headless else ''}
-            
-            # Launch PX4 with simulator
-            cd $HOME/PX4-Autopilot && {headless_arg} make px4_sitl {sim_target} 2>&1
+            # Launch PX4 with Gazebo
+            # Add param override for failure injection
+            cd $HOME/PX4-Autopilot && make px4_sitl {sim_target} 2>&1
         """
         
+        logger.info(f"  Simulator: {sim_target}")
         logger.info(f"  PX4_SIM_HOST_ADDR={self.config.wsl_ip}")
         
         # Start PX4 in background
@@ -352,17 +233,11 @@ class WSLController:
         )
         
         # Wait for PX4 to be ready, capturing output
-        # Gazebo Harmonic takes longer to start than SIH simulator
-        effective_timeout = self.config.px4_startup_timeout
-        if is_gazebo_harmonic:
-            effective_timeout = max(180, self.config.px4_startup_timeout)  # 180s for Gazebo
-            logger.info(f"Waiting for PX4 SITL to initialize (Gazebo timeout: {effective_timeout}s)...")
-        else:
-            logger.info("Waiting for PX4 SITL to initialize...")
+        logger.info("Waiting for PX4 SITL to initialize...")
         start_time = time.time()
         output_lines = []
         
-        while time.time() - start_time < effective_timeout:
+        while time.time() - start_time < self.config.px4_startup_timeout:
             # Check if process is still running
             if self._px4_process.poll() is not None:
                 # Process ended, capture remaining output
@@ -506,9 +381,6 @@ class MissionExecutor:
         self.drone = None
         self.telemetry_data: List[Dict] = []
         self._capturing = False
-        # Track fault injection status for reporting
-        self.fault_injection_success = False  # True if native PX4 fault injection worked
-        self.fault_injection_mode = "none"    # "native", "emulated", "fallback", or "none"
     
     async def connect(self, max_retries: int = 3, retry_delay: float = 5.0) -> bool:
         """
@@ -521,21 +393,6 @@ class MissionExecutor:
         Returns:
             True if connected, False if all retries failed
         """
-        # Validate IP first
-        if "x.x" in self.config.wsl_ip or "[" in self.config.wsl_ip:
-            logger.error(f"Invalid WSL IP detected: {self.config.wsl_ip}. Please configure correct IP.")
-            return False
-
-        # Pre-check connectivity with ping (Windows)
-        try:
-            # -n 1 = 1 count, -w 1000 = 1000ms timeout
-            ping_cmd = ["ping", "-n", "1", "-w", "1000", self.config.wsl_ip]
-            if subprocess.run(ping_cmd, capture_output=True).returncode != 0:
-                logger.error(f"Host {self.config.wsl_ip} is unreachable via ping. Aborting connection.")
-                return False
-        except Exception:
-            pass # Ignore ping errors (e.g. permission), let MAVSDK try
-
         from mavsdk import System
         
         connection_url = f"udp://{self.config.wsl_ip}:{self.config.mavsdk_port}"
@@ -557,7 +414,7 @@ class MissionExecutor:
                         connected = True
                         break
                     timeout_counter += 1
-                    if timeout_counter > 10:  # REDUCED: 10 second timeout for faster feedback
+                    if timeout_counter > 30:  # ~30 second timeout
                         raise TimeoutError("Connection state timeout")
                     await asyncio.sleep(1)
                 
@@ -565,18 +422,14 @@ class MissionExecutor:
                     raise ConnectionError("Failed to establish connection")
                 
                 # Wait for GPS fix with timeout
-                # NOTE: Gazebo Harmonic on WSL2 may need longer GPS initialization
-                gps_max_timeout = 60 if not self.config.headless else 30  # 60s for Gazebo, 30s for SIH
-                logger.info(f"Waiting for GPS fix (timeout: {gps_max_timeout}s)...")
+                logger.info("Waiting for GPS fix...")
                 gps_timeout = 0
                 async for health in self.drone.telemetry.health():
                     if health.is_global_position_ok:
                         logger.info("✓ GPS fix acquired")
                         return True
                     gps_timeout += 1
-                    if gps_timeout % 10 == 0:
-                        logger.info(f"  Still waiting for GPS... ({gps_timeout}s)")
-                    if gps_timeout > gps_max_timeout:
+                    if gps_timeout > 60:  # ~60 second GPS timeout
                         raise TimeoutError("GPS fix timeout")
                     await asyncio.sleep(1)
                 
@@ -590,12 +443,6 @@ class MissionExecutor:
                 await self._cleanup_connection()
                 
                 if attempt < max_retries:
-                    # If it was a generic "Connection failed" (likely IP issue), 
-                    # fail fast instead of retrying 3 times if we are sure it's dead
-                    if "Connection failed" in str(e) or "Destination IP unknown" in str(e):
-                        logger.error("Fatal connection error (Invalid IP?). Stopping retries.")
-                        return False
-
                     logger.info(f"Retrying in {retry_delay} seconds...")
                     await asyncio.sleep(retry_delay)
                 else:
@@ -622,154 +469,57 @@ class MissionExecutor:
         """Start capturing telemetry in background."""
         self._capturing = True
         self.telemetry_data = []
-        
-        # State variables for all streams
         self._current_position = None
         self._current_attitude = None
         self._current_battery = None
         self._current_actuator = None
-        self._current_gps_info = None
-        self._current_velocity = None
-        self._current_imu = None
-        
         self._capture_start_time = time.time()
         
-        # --- Telemetry Stream Coroutines ---
-        
+        # Create separate tasks for each telemetry stream
         async def position_capture():
             async for pos in self.drone.telemetry.position():
-                if not self._capturing: break
+                if not self._capturing:
+                    break
                 self._current_position = pos
                 
         async def attitude_capture():
             async for att in self.drone.telemetry.attitude_euler():
-                if not self._capturing: break
+                if not self._capturing:
+                    break
                 self._current_attitude = att
                 
         async def battery_capture():
             async for bat in self.drone.telemetry.battery():
-                if not self._capturing: break
+                if not self._capturing:
+                    break
                 self._current_battery = bat
 
         async def actuator_capture():
-            try:
-                # Explicitly request the stream at 20Hz
-                await self.drone.telemetry.set_rate_actuator_output_status(20.0)
-                logger.info("Subscribed to actuator_output_status at 20Hz")
-            except Exception as e:
-                logger.warning(f"Failed to set actuator rate: {e}")
-
             async for act in self.drone.telemetry.actuator_output_status():
-                if not self._capturing: break
+                if not self._capturing:
+                    break
                 self._current_actuator = act
-                
-        async def gps_info_capture():
-            try:
-                await self.drone.telemetry.set_rate_gps_info(5.0) # 5Hz enough for status
-            except Exception as e:
-                logger.warning(f"Failed to set gps_info rate: {e}")
-                
-            async for gps in self.drone.telemetry.gps_info():
-                if not self._capturing: break
-                self._current_gps_info = gps
-                
-        async def velocity_capture():
-            try:
-                await self.drone.telemetry.set_rate_velocity_ned(20.0)
-            except Exception as e:
-                logger.warning(f"Failed to set velocity_ned rate: {e}")
-                
-            async for vel in self.drone.telemetry.velocity_ned():
-                if not self._capturing: break
-                self._current_velocity = vel
-                
-        async def imu_capture():
-            try:
-                # IMU needs high rate for vibration/noise analysis
-                await self.drone.telemetry.set_rate_imu(50.0)
-                logger.info("Subscribed to imu at 50Hz")
-            except Exception as e:
-                # Fallback if 50Hz fails
-                try: 
-                    await self.drone.telemetry.set_rate_imu(20.0)
-                except: 
-                    pass
-                logger.warning(f"Failed to set imu rate (attempted 50Hz): {e}")
-
-            async for imu in self.drone.telemetry.imu():
-                if not self._capturing: break
-                self._current_imu = imu
         
         async def data_recorder():
             """Record combined telemetry at fixed rate."""
             while self._capturing:
-                # Create base record with timestamp
-                record = {
-                    "timestamp": time.time() - self._capture_start_time,
-                }
-                
-                # --- Position ---
                 if self._current_position:
-                    record.update({
+                    record = {
+                        "timestamp": time.time() - self._capture_start_time,
                         "lat": self._current_position.latitude_deg,
                         "lon": self._current_position.longitude_deg,
                         "alt": self._current_position.absolute_altitude_m,
                         "relative_alt": self._current_position.relative_altitude_m,
-                    })
-                    
-                # --- Attitude ---
-                if self._current_attitude:
-                    record.update({
-                        "roll": self._current_attitude.roll_deg,
-                        "pitch": self._current_attitude.pitch_deg,
-                        "yaw": self._current_attitude.yaw_deg,
-                    })
-                
-                # --- Battery ---
-                if self._current_battery:
-                    record.update({
-                        "battery_v": self._current_battery.voltage_v,
-                        "battery_pct": self._current_battery.remaining_percent * 100,
-                    })
-                
-                # --- Actuators (Propulsion) ---
-                if self._current_actuator:
-                    # Explicit list cast for serialization safety
-                    record["actuator_controls_0"] = list(self._current_actuator.actuator)
-                else:
-                    record["actuator_controls_0"] = []
-                    
-                # --- GPS Info (Navigation) ---
-                if self._current_gps_info:
-                    record["gps_satellites"] = self._current_gps_info.num_satellites
-                    record["gps_fix_type"] = str(self._current_gps_info.fix_type) # Convert enum to string
-                
-                # --- Velocity (Control/Nav) ---
-                if self._current_velocity:
-                    record.update({
-                        "vel_n_m_s": self._current_velocity.north_m_s,
-                        "vel_e_m_s": self._current_velocity.east_m_s,
-                        "vel_d_m_s": self._current_velocity.down_m_s,
-                    })
-                    
-                # --- IMU (Sensor/Control) ---
-                if self._current_imu:
-                    # Acceleration
-                    acc = self._current_imu.acceleration_frd
-                    record.update({
-                        "acc_x_m_s2": acc.forward_m_s2,
-                        "acc_y_m_s2": acc.right_m_s2,
-                        "acc_z_m_s2": acc.down_m_s2,
-                    })
-                    # Angular Velocity (Body Rates)
-                    gyro = self._current_imu.angular_velocity_frd
-                    record.update({
-                        "gyro_x_rad_s": gyro.forward_rad_s,
-                        "gyro_y_rad_s": gyro.right_rad_s,
-                        "gyro_z_rad_s": gyro.down_rad_s,
-                    })
-
-                self.telemetry_data.append(record)
+                        "roll": self._current_attitude.roll_deg if self._current_attitude else 0,
+                        "pitch": self._current_attitude.pitch_deg if self._current_attitude else 0,
+                        "yaw": self._current_attitude.yaw_deg if self._current_attitude else 0,
+                        "battery_v": self._current_battery.voltage_v if self._current_battery else 0,
+                        "battery_pct": self._current_battery.remaining_percent * 100 if self._current_battery else 0,
+                        # Add actuator outputs (motor values)
+                        # actuator_output_status yields .actuator which is a list of floats
+                        "actuator_controls_0": self._current_actuator.actuator if self._current_actuator else [],
+                    }
+                    self.telemetry_data.append(record)
                 await asyncio.sleep(1.0 / self.config.telemetry_rate_hz)
         
         # Start all capture tasks concurrently
@@ -777,9 +527,6 @@ class MissionExecutor:
         asyncio.create_task(attitude_capture())
         asyncio.create_task(battery_capture())
         asyncio.create_task(actuator_capture())
-        asyncio.create_task(gps_info_capture())
-        asyncio.create_task(velocity_capture())
-        asyncio.create_task(imu_capture())
         asyncio.create_task(data_recorder())
     
     def stop_telemetry_capture(self):
@@ -793,9 +540,7 @@ class MissionExecutor:
         speed_m_s: float,
         fault_type: str = None,
         fault_onset_sec: int = 60,
-        fault_severity: float = 1.0,
-        px4_fault_cmd: str = None,
-        parachute_trigger: bool = False
+        fault_severity: float = 1.0
     ) -> Tuple[bool, List[Dict]]:
         """
         Execute a complete mission with LLM-specified parameters and fault injection.
@@ -807,7 +552,6 @@ class MissionExecutor:
             fault_type: Type of fault to inject (motor_failure, gps_loss, etc.)
             fault_onset_sec: Seconds after takeoff to inject fault
             fault_severity: Fault severity 0.0-1.0 (1.0 = complete failure)
-            parachute_trigger: If True, simulate parachute deployment (P1 enhancement)
         
         Returns:
             Tuple of (success, telemetry_data)
@@ -931,41 +675,30 @@ class MissionExecutor:
             if fault_type:
                 logger.info(f"🔧 EMULATING FAILURE: {fault_type} (severity: {fault_severity})")
                 try:
-                    # First try native PX4 fault injection (includes param fallback)
+                    # First try native PX4 fault injection
                     injection_success = await self._trigger_px4_fault(fault_type, fault_severity)
                     if injection_success:
-                        logger.info(f"✓ Fault {fault_type} injected successfully via PX4")
+                        logger.info(f"✓ Fault {fault_type} injected successfully via PX4 native")
                         fault_injected = True
-                        self.fault_injection_success = True
-                        # Mode is set by _trigger_px4_fault: "native" or "param"
-                        if self.fault_injection_mode == "none":
-                            self.fault_injection_mode = "native"  # Default
-                        # Wait for fault to take effect and complete
+                        # Wait for native fault to take effect and complete
                         await asyncio.sleep(30)
                     else:
                         # Use FailureEmulator for realistic behavioral emulation
-                        logger.info("⚠ Native + param injection unavailable - using behavioral emulation")
-                        self.fault_injection_mode = "emulated"
+                        logger.info("⚠ Native injection unavailable - using behavioral emulation")
                         from src.simulation.failure_emulator import FailureEmulator
                         
                         emulator = FailureEmulator(self.drone)
-                        emulation_result = await emulator.emulate(
-                            fault_type, 
-                            fault_severity,
-                            parachute_trigger=parachute_trigger
-                        )
+                        emulation_result = await emulator.emulate(fault_type, fault_severity)
                         
                         if emulation_result.success:
                             logger.info(f"✅ Failure emulated: {emulation_result.method}")
                             logger.info(f"   Phases: {' → '.join(emulation_result.phases_completed)}")
                             logger.info(f"   Observation duration: {emulation_result.observation_duration:.1f}s")
                             fault_injected = True
-                            self.fault_injection_success = True
                             # Emulator handles its own timing and landing
                         else:
                             logger.warning(f"⚠ Emulation failed: {emulation_result.error}")
                             logger.info("   Falling back to controlled landing")
-                            self.fault_injection_mode = "fallback"
                             await self.drone.action.land()
                             await asyncio.sleep(15)
                             fault_injected = True
@@ -1061,7 +794,7 @@ class MissionExecutor:
             
             return False, self.telemetry_data
     
-    async def _inject_fault_delayed(self, fault_type: str, delay_sec: int, severity: float = 1.0, px4_fault_cmd: str = None):
+    async def _inject_fault_delayed(self, fault_type: str, delay_sec: int, severity: float = 1.0):
         """
         Inject fault after specified delay.
         
@@ -1077,7 +810,7 @@ class MissionExecutor:
             await asyncio.sleep(delay_sec)
             
             logger.info(f"💥 INJECTING FAULT: {fault_type} (severity: {severity})")
-            injection_success = await self._trigger_px4_fault(fault_type, severity, px4_fault_cmd)
+            injection_success = await self._trigger_px4_fault(fault_type, severity)
             if injection_success:
                 logger.info(f"✓ Fault {fault_type} injected successfully via PX4")
             else:
@@ -1088,179 +821,43 @@ class MissionExecutor:
         except Exception as e:
             logger.error(f"Fault injection failed: {e}")
     
-    def _generate_px4_failure_cmd(self, fault_type_lower: str, severity: float) -> str:
-        """
-        Generate PX4 shell failure command based on fault type.
-        
-        PX4 failure command format: failure <unit> <type>
-        Units: gyro, accel, mag, baro, gps, airspeed, motor, servo, avoidance, rc, mavlink
-        Types: ok, off, stuck, garbage, wrong, slow, delayed, intermittent
-        
-        IMPORTANT: Airspace violations (altitude_violation, geofence_violation) do NOT
-        inject any fault - the drone was healthy but in wrong location.
-        
-        Returns:
-            PX4 shell command string or empty string if unknown/no fault to inject
-        """
-        # SKIP fault injection for airspace violations
-        # These are NOT mechanical failures - drone is healthy but in wrong location
-        if any(x in fault_type_lower for x in ['altitude_violation', 'geofence_violation', 'airspace']):
-            logger.info("  → Airspace violation: NO fault injection (healthy drone demonstration)")
-            return ""  # No fault command - healthy flight
-        
-        # Map fault types to PX4 failure units
-        fault_mappings = {
-            'motor': 'motor',
-            'propulsion': 'motor',
-            'engine': 'motor',
-            'gps': 'gps',
-            'navigation': 'gps',
-            'flyaway': 'gps',
-            'battery': 'battery',  # Note: battery failure may not be supported
-            'power': 'battery',
-            'gyro': 'gyro',
-            'accelerometer': 'accel',
-            'magnetometer': 'mag',
-            'compass': 'mag',
-            'baro': 'baro',
-            'barometer': 'baro',
-            'rc': 'rc',
-            'remote': 'rc',
-        }
-        
-        # Find matching unit
-        unit = None
-        for key, value in fault_mappings.items():
-            if key in fault_type_lower:
-                unit = value
-                break
-        
-        if not unit:
-            return ""
-        
-        # Determine failure type based on severity
-        if severity >= 0.8:
-            fail_type = "off"
-        elif severity >= 0.5:
-            fail_type = "intermittent"
-        else:
-            fail_type = "stuck"
-        
-        return f"failure {unit} {fail_type}"
-    
-    async def _trigger_px4_fault(self, fault_type: str, severity: float = 1.0, px4_fault_cmd: str = None):
+    async def _trigger_px4_fault(self, fault_type: str, severity: float = 1.0):
         """
         Trigger actual PX4 fault using MAVSDK failure module.
         
         PX4 requires:
         1. SYS_FAILURE_EN=1 to enable failure injection
-        2. Use drone.failure.inject(FailureUnit, FailureType, instance)
+        2. Use drone.failure.inject() with FailureUnit and FailureType
         
-        Reference: https://docs.px4.io/main/en/debug/failure_injection.html
-        
-        FailureUnit options (MAVSDK Python enums):
-          Sensors: SENSOR_GYRO, SENSOR_ACCEL, SENSOR_MAG, SENSOR_BARO, SENSOR_GPS,
-                   SENSOR_OPTICAL_FLOW, SENSOR_VIO, SENSOR_DISTANCE_SENSOR, SENSOR_AIRSPEED
-          Systems: SYSTEM_BATTERY, SYSTEM_MOTOR, SYSTEM_SERVO, SYSTEM_AVOIDANCE,
-                   SYSTEM_RC_SIGNAL, SYSTEM_MAVLINK_SIGNAL
+        FailureUnit options: SENSOR_GYRO, SENSOR_ACCEL, SENSOR_MAG, SENSOR_BARO, 
+                             SENSOR_GPS, SENSOR_OPTICAL_FLOW, SENSOR_VIO, 
+                             SENSOR_DISTANCE_SENSOR, SENSOR_AIRSPEED, 
+                             SYSTEM_BATTERY, SYSTEM_MOTOR, SYSTEM_SERVO,
+                             SYSTEM_AVOIDANCE, SYSTEM_RC_SIGNAL, SYSTEM_MAVLINK_SIGNAL
         
         FailureType options: OK, OFF, STUCK, GARBAGE, WRONG, SLOW, DELAYED, INTERMITTENT
-        
-        Correct API: await drone.failure.inject(FailureUnit.SENSOR_GPS, FailureType.OFF, 0)
         
         Args:
             fault_type: Normalized fault type from LLM
             severity: 0.0-1.0 severity (1.0 = complete failure = OFF)
-            px4_fault_cmd: Optional raw PX4 shell command from LLM
         """
         from mavsdk.failure import FailureUnit, FailureType
-        from datetime import datetime
         
         fault_type_lower = fault_type.lower().replace("-", "_").replace(" ", "_")
-        injection_timestamp = datetime.now().isoformat()
-        
-        # =====================================================================
-        # DETAILED FAULT INJECTION LOG - For Developer Alerting
-        # =====================================================================
-        logger.info("=" * 70)
-        logger.info("  🚨 FAULT INJECTION INITIATED")
-        logger.info("=" * 70)
-        logger.info(f"  Timestamp:      {injection_timestamp}")
-        logger.info(f"  Fault Type:     {fault_type}")
-        logger.info(f"  Severity:       {severity:.2f} (1.0=complete failure)")
-        logger.info(f"  LLM Command:    {px4_fault_cmd if px4_fault_cmd else 'None (auto-generate)'}")
-        logger.info(f"  Simulator:      {self.config.simulator}")
-        logger.info("-" * 70)
         
         try:
             # Step 1: Enable failure injection in PX4
-            logger.info("  [STEP 1] Enabling PX4 failure injection parameter...")
-            logger.info(f"           Parameter: SYS_FAILURE_EN = 1")
+            # Note: This must be done BEFORE attempting to inject failures
+            logger.info("   → Enabling PX4 failure injection (SYS_FAILURE_EN=1)...")
             try:
                 await self.drone.param.set_param_int("SYS_FAILURE_EN", 1)
-                logger.info("           ✓ SUCCESS: SYS_FAILURE_EN enabled")
-                await asyncio.sleep(0.5)
+                logger.info("   ✓ SYS_FAILURE_EN enabled")
+                # Wait for parameter to propagate (important for MAVSDK timing)
+                await asyncio.sleep(1.0)
             except Exception as e:
-                logger.warning(f"           ⚠ WARNING: Could not set SYS_FAILURE_EN: {e}")
-                logger.info("           (Parameter may already be enabled via environment)")
-
-            # =====================================================================
-            # NEW: Try parameter-based injection FIRST (most reliable for all simulators)
-            # =====================================================================
-            # Parameter injection works with SIH, Gazebo Harmonic, and Gazebo Classic
-            # Unlike MAVSDK failure.inject() which requires simulator-specific plugins
-            logger.info("  [STEP 2] Trying parameter-based fault injection (most reliable)...")
-            param_success = await self._inject_fault_via_params(fault_type_lower, severity)
-            if param_success:
-                logger.info("-" * 70)
-                logger.info(f"  ✅ FAULT INJECTION COMPLETE via Parameters")
-                logger.info(f"     Method: PX4 parameter manipulation")
-                logger.info(f"     Expected Effect: {self._describe_fault_effect(fault_type_lower)}")
-                logger.info("=" * 70)
-                return True
+                logger.warning(f"   ⚠ Could not set SYS_FAILURE_EN (may already be enabled): {e}")
             
-            logger.info("           → Parameter injection not applicable for this fault type")
-            logger.info("             Falling back to shell/MAVSDK methods...")
-            
-            # Step 3: Try raw PX4 shell command if available (Trust the LLM)
-            # The PX4 shell `failure` command works with SIH simulator when SYS_FAILURE_EN=1
-            shell_cmd = px4_fault_cmd if (px4_fault_cmd and len(px4_fault_cmd) > 5) else None
-            
-            # If no LLM command, generate a standard shell command based on fault type
-            if not shell_cmd:
-                shell_cmd = self._generate_px4_failure_cmd(fault_type_lower, severity)
-                logger.info(f"  [STEP 3] Auto-generated PX4 shell command:")
-            else:
-                logger.info(f"  [STEP 3] Using LLM-provided PX4 shell command:")
-            
-            if shell_cmd:
-                logger.info(f"           Command: '{shell_cmd}'")
-                logger.info(f"           Method:  PX4 Shell (MAVSDK shell.send)")
-                shell_start = datetime.now()
-                try:
-                    feedback = await asyncio.wait_for(
-                        self.drone.shell.send(shell_cmd),
-                        timeout=5.0
-                    )
-                    shell_elapsed = (datetime.now() - shell_start).total_seconds() * 1000
-                    logger.info(f"           ✓ SUCCESS: Command executed in {shell_elapsed:.0f}ms")
-                    logger.info(f"           Response:  {feedback if feedback else '(no feedback)'}")
-                    logger.info("-" * 70)
-                    logger.info(f"  ✅ FAULT INJECTION COMPLETE via PX4 Shell")
-                    logger.info(f"     Expected Effect: {self._describe_fault_effect(fault_type_lower)}")
-                    logger.info("=" * 70)
-                    self.fault_injection_mode = "native"
-                    return True
-                except asyncio.TimeoutError:
-                    shell_elapsed = (datetime.now() - shell_start).total_seconds() * 1000
-                    logger.warning(f"           ⚠ TIMEOUT: Shell command took >{shell_elapsed:.0f}ms")
-                    logger.info("           Fallback: Trying MAVSDK failure.inject()...")
-                except Exception as shell_error:
-                    logger.warning(f"           ⚠ FAILED: {shell_error}")
-                    logger.info("           Fallback: Trying MAVSDK failure.inject()...")
-                # Fallthrough to MAVSDK logic
-            # Step 4: Determine failure type based on severity
-            logger.info(f"  [STEP 4] Mapping fault to MAVSDK FailureUnit...")
+            # Step 2: Determine failure type based on severity
             # severity 1.0 = OFF (complete failure)
             # severity 0.5 = INTERMITTENT (partial failure)
             # severity < 0.5 = STUCK (sensor gives fixed value)
@@ -1274,224 +871,79 @@ class MissionExecutor:
                 failure_type = FailureType.STUCK
                 failure_type_name = "STUCK"
             
-            # Map fault types to MAVSDK FailureUnit (correct enum names)
-            # Reference: https://docs.px4.io/main/en/debug/failure_injection.html
-            # MAVSDK Python uses: SENSOR_* for sensors, SYSTEM_* for systems
+            # Step 3: Map fault types to MAVSDK FailureUnit
             if "motor" in fault_type_lower or "propulsion" in fault_type_lower or "engine" in fault_type_lower:
                 failure_unit = FailureUnit.SYSTEM_MOTOR
-                unit_name = "SYSTEM_MOTOR"
+                unit_name = "MOTOR"
                 
-            elif "gps" in fault_type_lower or "navigation" in fault_type_lower or "flyaway" in fault_type_lower:
+            elif "gps" in fault_type_lower or "navigation" in fault_type_lower:
                 failure_unit = FailureUnit.SENSOR_GPS
-                unit_name = "SENSOR_GPS"
+                unit_name = "GPS"
                 
             elif "battery" in fault_type_lower or "power" in fault_type_lower:
                 failure_unit = FailureUnit.SYSTEM_BATTERY
-                unit_name = "SYSTEM_BATTERY"
+                unit_name = "BATTERY"
                 
             elif "control" in fault_type_lower or "servo" in fault_type_lower:
-                failure_unit = FailureUnit.SYSTEM_SERVO
-                unit_name = "SYSTEM_SERVO"
+                # X500 multicopter has NO servos - only motors
+                # SYSTEM_SERVO will timeout because no servo actuator exists
+                # Map to SYSTEM_MOTOR which represents the actual actuators
+                failure_unit = FailureUnit.SYSTEM_MOTOR
+                unit_name = "MOTOR"
                 
             elif "gyro" in fault_type_lower:
                 failure_unit = FailureUnit.SENSOR_GYRO
-                unit_name = "SENSOR_GYRO"
+                unit_name = "GYRO"
                 
             elif "accel" in fault_type_lower:
                 failure_unit = FailureUnit.SENSOR_ACCEL
-                unit_name = "SENSOR_ACCEL"
+                unit_name = "ACCEL"
                 
             elif "mag" in fault_type_lower or "compass" in fault_type_lower:
                 failure_unit = FailureUnit.SENSOR_MAG
-                unit_name = "SENSOR_MAG"
+                unit_name = "MAG"
                 
             elif "baro" in fault_type_lower or "altitude" in fault_type_lower:
                 failure_unit = FailureUnit.SENSOR_BARO
-                unit_name = "SENSOR_BARO"
+                unit_name = "BARO"
                 
             elif "rc" in fault_type_lower or "remote" in fault_type_lower:
                 failure_unit = FailureUnit.SYSTEM_RC_SIGNAL
-                unit_name = "SYSTEM_RC_SIGNAL"
+                unit_name = "RC_SIGNAL"
                 
             else:
                 # Default to motor failure for unknown types
-                logger.warning(f"           Unknown fault '{fault_type}', defaulting to SYSTEM_MOTOR")
+                logger.warning(f"   Unknown fault type '{fault_type}', defaulting to MOTOR failure")
                 failure_unit = FailureUnit.SYSTEM_MOTOR
-                unit_name = "SYSTEM_MOTOR"
+                unit_name = "MOTOR"
             
-            logger.info(f"           FailureUnit:  {unit_name}")
-            logger.info(f"           FailureType:  {failure_type_name}")
-            logger.info(f"           Instance:     0 (primary)")
-            
-            # Step 5: Inject the failure with retry (MAVSDK method)
-            # Correct API: inject(failure_unit, failure_type, instance)
-            # Reference: MAVSDK Python - Failure.inject(failure_unit, failure_type, instance)
+            # Step 4: Inject the failure with retry
             # instance=0 means first instance of this unit type
-            logger.info(f"  [STEP 5] Injecting via MAVSDK failure.inject()...")
-            logger.info(f"           API: inject({unit_name}, {failure_type_name}, 0)")
+            logger.info(f"   → Injecting {unit_name} failure ({failure_type_name})...")
             
-            # Retry logic with timeout - some Gazebo setups need multiple attempts
-            max_retries = 2
+            # Retry logic - some Gazebo setups need multiple attempts
+            max_retries = 3
             for attempt in range(max_retries):
                 try:
-                    mavsdk_start = datetime.now()
-                    # Correct MAVSDK API: inject(failure_unit, failure_type, instance)
-                    await asyncio.wait_for(
-                        self.drone.failure.inject(
-                            failure_unit,
-                            failure_type, 
-                            0  # instance 0 = primary/first
-                        ),
-                        timeout=3.0  # 3 second timeout per attempt
-                    )
-                    mavsdk_elapsed = (datetime.now() - mavsdk_start).total_seconds() * 1000
-                    logger.info(f"           ✓ SUCCESS: Injected in {mavsdk_elapsed:.0f}ms")
-                    logger.info("-" * 70)
-                    logger.info(f"  ✅ FAULT INJECTION COMPLETE via MAVSDK")
-                    logger.info(f"     Unit: {unit_name}, Type: {failure_type_name}, Instance: 0")
-                    logger.info(f"     Expected Effect: {self._describe_fault_effect(fault_type_lower)}")
-                    logger.info("=" * 70)
-                    self.fault_injection_mode = "native"
+                    await self.drone.failure.inject(failure_unit, failure_type, 0)
+                    logger.info(f"   ✓ Failure injected: {unit_name} = {failure_type_name}")
                     return True  # Success!
-                except asyncio.TimeoutError:
-                    logger.warning(f"           ⚠ TIMEOUT (attempt {attempt + 1}/{max_retries})")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(0.5)  # Brief wait before retry
                 except Exception as inject_error:
                     if attempt < max_retries - 1:
-                        logger.info(f"           ⏳ Retry {attempt + 2}/{max_retries}...")
-                        await asyncio.sleep(0.5)  # Wait before retry
+                        logger.info(f"   ⏳ Retry {attempt + 2}/{max_retries}...")
+                        await asyncio.sleep(1.0)  # Wait before retry
                     else:
                         # All retries failed
-                        logger.warning(f"           ⚠ FAILED after {max_retries} attempts: {inject_error}")
-            
-            # All injection methods failed
-            # This is reached when:
-            # - Parameter injection not applicable (fault type not mappable)
-            # - Shell command failed/timed out
-            # - MAVSDK injection failed/timed out
-            logger.info("-" * 70)
-            logger.warning(f"  ⚠ FAULT INJECTION FALLBACK MODE")
-            logger.info(f"     All injection methods failed for fault type: {fault_type}")
-            logger.info(f"     Impact: Telemetry may show normal flight patterns")
-            logger.info(f"             Behavioral analysis will still work based on telemetry")
-            logger.info("=" * 70)
-            self.fault_injection_mode = "fallback"
-            return False  # Signal that actual fault injection failed
+                        logger.warning(f"   ⚠ MAVSDK failure.inject() failed after {max_retries} attempts: {inject_error}")
+                        logger.warning(f"   ⚠ Gazebo Harmonic (gz_x500) may not fully support failure injection")
+                        logger.warning(f"   ⚠ Will fallback to crash simulation instead")
+                        return False  # Signal that actual fault injection failed
                 
         except Exception as e:
-            logger.error(f"  ❌ FAULT INJECTION ERROR: {e}")
-            logger.info("=" * 70)
+            logger.error(f"Failed to inject PX4 fault: {e}")
             return False  # Signal failure
-    
-    async def _inject_fault_via_params(self, fault_type_lower: str, severity: float) -> bool:
-        """
-        Inject fault using PX4 parameter manipulation.
         
-        This is the MOST RELIABLE injection method - works with all simulators:
-        - SIH (sihsim_quadx)
-        - Gazebo Harmonic (gz_x500)
-        - Gazebo Classic
-        
-        Supported injections:
-        - Baro/Altitude: SIM_BARO_OFF_P (pressure offset in Pa) → altitude error
-        - GPS/Navigation/Flyaway: EKF2_GPS_P_NOISE (position noise in m) → position uncertainty
-        - Mag/Compass: SIM_MAG_OFFSET_X (offset in Gauss) → heading error
-        - Accel: EKF2_ACC_NOISE (m/s²) → velocity estimation error
-        - Gyro: EKF2_GYR_NOISE (rad/s) → attitude estimation error
-        - Motor/Propulsion: CA_FAILURE_MODE (control allocation failure mode)
-        """
-        try:
-            if "baro" in fault_type_lower or "altitude" in fault_type_lower:
-                # Inject 500Pa offset (~40m altitude error)
-                # Even airspace violation should use GPS drift to simulate position error
-                offset = 500 * severity  # 0-500 Pa based on severity
-                await self.drone.param.set_param_float("SIM_BARO_OFF_P", float(offset))
-                logger.info(f"           ✓ Set SIM_BARO_OFF_P = {offset:.0f} Pa (altitude offset)")
-                self.fault_injection_mode = "param"
-                return True
-                
-            elif "gps" in fault_type_lower or "navigation" in fault_type_lower or "flyaway" in fault_type_lower:
-                # Increase GPS noise to simulate degradation
-                noise = 5.0 + (45.0 * severity)  # 5-50m noise
-                await self.drone.param.set_param_float("EKF2_GPS_P_NOISE", float(noise))
-                logger.info(f"           ✓ Set EKF2_GPS_P_NOISE = {noise:.1f} m (GPS degradation)")
-                self.fault_injection_mode = "param"
-                return True
-                
-            elif "mag" in fault_type_lower or "compass" in fault_type_lower:
-                # Inject magnetometer offset (0.5 Gauss = ~45° heading error)
-                offset = 0.5 * severity
-                await self.drone.param.set_param_float("SIM_MAG_OFFSET_X", float(offset))
-                logger.info(f"           ✓ Set SIM_MAG_OFFSET_X = {offset:.2f} Ga (compass error)")
-                self.fault_injection_mode = "param"
-                return True
-                
-            elif "gyro" in fault_type_lower:
-                # Increase gyro noise
-                noise = 0.01 + (0.1 * severity)  # 0.01-0.11 rad/s noise
-                await self.drone.param.set_param_float("EKF2_GYR_NOISE", float(noise))
-                logger.info(f"           ✓ Set EKF2_GYR_NOISE = {noise:.3f} rad/s")
-                self.fault_injection_mode = "param"
-                return True
-                
-            elif "accel" in fault_type_lower:
-                # Increase accelerometer noise
-                noise = 0.35 + (2.0 * severity)  # 0.35-2.35 m/s² noise
-                await self.drone.param.set_param_float("EKF2_ACC_NOISE", float(noise))
-                logger.info(f"           ✓ Set EKF2_ACC_NOISE = {noise:.2f} m/s²")
-                self.fault_injection_mode = "param"
-                return True
-            
-            elif "motor" in fault_type_lower or "propulsion" in fault_type_lower:
-                # Motor failure via control allocation
-                # CA_FAILURE_MODE: 0=disabled, 1=remove motors, 2=reduce motors
-                failure_mode = 1 if severity >= 0.8 else 2
-                await self.drone.param.set_param_int("CA_FAILURE_MODE", failure_mode)
-                logger.info(f"           ✓ Set CA_FAILURE_MODE = {failure_mode} (motor failure simulation)")
-                self.fault_injection_mode = "param"
-                return True
-            
-            elif "none" in fault_type_lower or "violation" in fault_type_lower:
-                # No fault injection for airspace violations - normal drone behavior
-                logger.info(f"           ✓ No fault injection needed (airspace violation / healthy drone)")
-                self.fault_injection_mode = "emulated"
-                return True
-            
-            else:
-                logger.info(f"           No parameter mapping for '{fault_type_lower}'")
-                return False
-                
-        except Exception as e:
-            logger.warning(f"           Parameter injection failed: {e}")
-            return False
-    
-    def _describe_fault_effect(self, fault_type_lower: str) -> str:
-        """Return human-readable description of expected fault effects."""
-        # Airspace violations are NOT mechanical failures
-        if any(x in fault_type_lower for x in ['altitude_violation', 'geofence_violation', 'airspace']):
-            return "No fault injected (healthy drone in restricted airspace) → Normal flight telemetry"
-        
-        effects = {
-            "motor": "Motor power reduction → Yaw/roll instability, possible controlled descent",
-            "propulsion": "Thrust asymmetry → Attitude oscillation, altitude loss",
-            "gps": "Position estimate degradation → EKF mode switch, possible RTL",
-            "navigation": "Navigation uncertainty → Drift, failsafe activation",
-            "flyaway": "Loss of position control → Uncontrolled horizontal movement",
-            "battery": "Low voltage simulation → RTL or forced landing sequence",
-            "power": "Power system fault → Failsafe landing behavior",
-            "gyro": "Angular rate sensor noise → Attitude estimation errors",
-            "accel": "Accelerometer fault → Velocity estimation drift",
-            "mag": "Compass interference → Heading errors, yaw drift",
-            "compass": "Magnetometer stuck → EKF fallback to GPS heading",
-            "baro": "Altitude sensor off → Altitude hold degradation",
-            "rc": "RC signal loss → Failsafe behavior (RTL/Land)",
-            "control": "Servo malfunction → Reduced control authority",
-        }
-        for key, desc in effects.items():
-            if key in fault_type_lower:
-                return desc
-        return "Unknown fault type → Monitor telemetry for anomalies"
+        return True  # Signal success
 
 
 # =============================================================================
@@ -1505,14 +957,6 @@ class AutomatedPipeline:
         self.config = config
         self.wsl = WSLController(config)
         self.executor = None
-        self.timing_metrics = {}  # Track step durations
-        
-    def _track_time(self, step_name: str, start_time: float) -> float:
-        """Record step duration and return current time."""
-        duration = time.time() - start_time
-        self.timing_metrics[step_name] = round(duration, 2)
-        logger.info(f"  ⏱ {step_name}: {duration:.2f}s")
-        return time.time()
         
     def run(self, incident_index: int = 0, skip_px4: bool = False) -> Dict[str, Path]:
         """Run the full automated pipeline."""
@@ -1526,11 +970,6 @@ class AutomatedPipeline:
         logger.info("=" * 70)
         logger.info("")
         
-        # Initialize timing
-        pipeline_start = time.time()
-        self.timing_metrics = {}
-        step_start = time.time()
-        
         try:
             # Step 0: Launch QGroundControl (if not already running)
             logger.info("")
@@ -1538,12 +977,11 @@ class AutomatedPipeline:
             self.wsl.launch_qgroundcontrol()
             
             # Step 1: Load FAA incident (do first to get location for PX4 home)
-            self._step_header(1, "Load FAA Report")
-            step_start = time.time()
-            incident = self._load_report(incident_index)
-            logger.info(f"  ID: {incident.get('report_id', 'Unknown')}")
+            self._step_header(1, "Load FAA Incident")
+            incident = self._load_incident(incident_index)
+            logger.info(f"  ID: {incident.get('incident_id', 'Unknown')}")
             logger.info(f"  Location: {incident.get('city', 'Unknown')}, {incident.get('state', 'Unknown')}")
-            step_start = self._track_time("T_load", step_start)
+            logger.info(f"  Type: {incident.get('incident_type', 'Unknown')}")
             
             # Step 2: Generate LLM configuration (before PX4 to get home location)
             self._step_header(2, "Generate LLM Configuration")
@@ -1551,7 +989,6 @@ class AutomatedPipeline:
             fault_type = flight_config.get('fault_injection', {}).get('fault_type', 'none')
             logger.info(f"  Fault Type: {fault_type}")
             logger.info(f"  Waypoints: {len(flight_config.get('waypoints', []))}")
-            step_start = self._track_time("T_translate", step_start)
             
             # Copy home location to WSL controller for PX4 startup
             if hasattr(self, '_home_lat'):
@@ -1566,7 +1003,6 @@ class AutomatedPipeline:
             else:
                 if not self.wsl.start_px4_gazebo():
                     raise RuntimeError("Failed to start PX4 SITL")
-            step_start = self._track_time("T_px4_init", step_start)
             
             # Step 4: Execute mission
             self._step_header(4, "Execute Flight Mission")
@@ -1574,29 +1010,14 @@ class AutomatedPipeline:
             logger.info(f"  Mission Success: {success}")
             logger.info(f"  Telemetry Points: {len(telemetry)}")
             
-            # Capture fault injection status for reporting
-            if self.executor:
-                flight_config["fault_injection_status"] = {
-                    "success": self.executor.fault_injection_success,
-                    "mode": self.executor.fault_injection_mode,
-                }
-                if not self.executor.fault_injection_success and flight_config.get("fault_injection", {}).get("fault_type"):
-                    logger.warning(f"  ⚠ Fault injection fallback: {self.executor.fault_injection_mode}")
-            step_start = self._track_time("T_simulate", step_start)
-            
             self._step_header(5, "Generate Safety Report")
             safety_report = self._generate_safety_report(incident, flight_config, telemetry)
             logger.info(f"  Hazard Level: {safety_report.get('safety_level', 'UNKNOWN')}")
             logger.info(f"  Recommendation: {safety_report.get('verdict', 'REVIEW')}")
-            step_start = self._track_time("T_analyze", step_start)
             
             # Step 6: Save reports
             self._step_header(6, "Save Reports")
             paths = self._save_reports(incident, flight_config, telemetry, safety_report)
-            step_start = self._track_time("T_save", step_start)
-            
-            # Total pipeline time
-            self.timing_metrics["T_total"] = round(time.time() - pipeline_start, 2)
             
             # Summary
             self._print_summary(incident, safety_report, len(telemetry), paths)
@@ -1614,7 +1035,7 @@ class AutomatedPipeline:
         """Run the pipeline for a specific incident dict (for batch processing)."""
         logger.info("")
         logger.info("=" * 60)
-        logger.info(f"  PROCESSING: {incident.get('report_id', 'Unknown')}")
+        logger.info(f"  PROCESSING: {incident.get('incident_id', 'Unknown')}")
         logger.info("=" * 60)
         logger.info(f"  Location: {incident.get('city', 'Unknown')}, {incident.get('state', '')}")
         logger.info(f"  Type: {incident.get('incident_type', 'other')}")
@@ -1646,15 +1067,6 @@ class AutomatedPipeline:
             logger.info(f"  Mission Success: {success}")
             logger.info(f"  Telemetry Points: {len(telemetry)}")
             
-            # Capture fault injection status for reporting
-            if self.executor:
-                flight_config["fault_injection_status"] = {
-                    "success": self.executor.fault_injection_success,
-                    "mode": self.executor.fault_injection_mode,
-                }
-                if not self.executor.fault_injection_success and flight_config.get("fault_injection", {}).get("fault_type"):
-                    logger.warning(f"  ⚠ Fault injection fallback: {self.executor.fault_injection_mode}")
-            
             # Step 4: Generate safety report
             self._step_header(4, "Generate Safety Report")
             safety_report = self._generate_safety_report(incident, flight_config, telemetry)
@@ -1667,7 +1079,7 @@ class AutomatedPipeline:
             # Summary
             logger.info("")
             logger.info("=" * 40)
-            logger.info(f"✓ COMPLETE: {incident.get('report_id', 'Unknown')}")
+            logger.info(f"✓ COMPLETE: {incident.get('incident_id', 'Unknown')}")
             logger.info(f"  Output: {paths.get('report_dir', 'N/A')}")
             logger.info("=" * 40)
             
@@ -1687,13 +1099,13 @@ class AutomatedPipeline:
         logger.info(f"  STEP {num}: {name}")
         logger.info("-" * 60)
     
-    def _load_report(self, index: int) -> Dict:
-        """Load FAA report by index."""
+    def _load_incident(self, index: int) -> Dict:
+        """Load FAA sighting by index."""
         from src.faa.sighting_filter import get_sighting_filter
         
         sighting_filter = get_sighting_filter()
         count = sighting_filter.load()
-        logger.info(f"  Available reports: {count}")
+        logger.info(f"  Available sightings: {count}")
         
         sighting = sighting_filter.get_by_index(index)
         return sighting
@@ -1720,31 +1132,32 @@ class AutomatedPipeline:
             incident_description=incident.get("description", incident.get("summary", "")),
             incident_location=f"{incident.get('city', '')}, {incident.get('state', '')}",
             incident_type=incident.get("incident_type", "unknown"),
-            report_id=incident.get("report_id", "Unknown"),
         )
         
-        # Log simulation mode (if available, mostly legacy)
+        # Log simulation mode from incident filter (MECHANICAL_TEST / AIRSPACE_SIGHTING)
         sim_mode = incident.get("simulation_mode", "MECHANICAL_TEST")
         if sim_mode == "AIRSPACE_SIGHTING":
-             logger.info(f"  Note: Legacy high-altitude tag detected (AIRSPACE_SIGHTING)")
+            logger.warning(f"  ⚠ High-altitude incident detected: simulation capped to drone-realistic altitude")
+            logger.info(f"  Extracted altitude: {incident.get('extracted_altitude_m', 0):.0f}m ({incident.get('altitude_source', 'unknown')})")
         
         # Extract altitude from LLM config
         mission_config = config.get("mission", {})
         llm_takeoff_alt = mission_config.get("takeoff_altitude_m")
         llm_cruise_alt = mission_config.get("cruise_altitude_m")
         
-        # Prefer LLM altitude if valid (>0 and <200m), otherwise use default
+        # Use simulatable_altitude_m from incident filter (capped to 120m for high-altitude incidents)
+        incident_alt = incident.get("simulatable_altitude_m", 50.0)
+        
+        # Prefer LLM altitude if valid (>0 and <200m), otherwise use incident filter's capped value
         if llm_takeoff_alt is not None and llm_takeoff_alt > 0 and llm_takeoff_alt < 200:
             takeoff_alt = llm_takeoff_alt
         else:
-            takeoff_alt = 50.0  # Default safe altitude
-            
+            takeoff_alt = min(incident_alt, 120.0) if incident_alt > 0 else 50.0  # Default to 50m if invalid
+        
         if llm_cruise_alt is not None and llm_cruise_alt > 0 and llm_cruise_alt < 200:
             cruise_alt = llm_cruise_alt
         else:
-            cruise_alt = 50.0
-        
-
+            cruise_alt = min(incident_alt, 120.0) if incident_alt > 0 else 50.0
         
         # Speed: use LLM config or sensible default
         speed = mission_config.get("speed_m_s")
@@ -1818,15 +1231,9 @@ class AutomatedPipeline:
         fault_onset_sec = fault_config.get("onset_sec", 60)  # Optimized by faa_scenario_generator
         fault_severity = fault_config.get("severity", 1.0)
         
-        # P1: Extract parachute trigger from proxy_modeling
-        proxy_modeling = config.get("proxy_modeling", {})
-        parachute_trigger = proxy_modeling.get("parachute_modeled", False)
-        
         logger.info(f"  Executing mission: alt={takeoff_alt}m, speed={speed_m_s}m/s, waypoints={len(waypoints)}")
         if fault_type:
             logger.info(f"  🎯 Fault injection: {fault_type} at T+{fault_onset_sec}s (severity: {fault_severity})")
-        if parachute_trigger:
-            logger.info(f"  🪂 Parachute deployment will be simulated")
         
         return await self.executor.execute_mission(
             waypoints=waypoints,
@@ -1834,9 +1241,7 @@ class AutomatedPipeline:
             speed_m_s=speed_m_s,
             fault_type=fault_type,
             fault_onset_sec=fault_onset_sec,
-            fault_severity=fault_severity,
-            px4_fault_cmd=config.get("px4_commands", {}).get("fault"),
-            parachute_trigger=parachute_trigger,
+            fault_severity=fault_severity
         )
     
     def _generate_safety_report(self, incident: Dict, config: Dict, telemetry: List[Dict]) -> Dict:
@@ -1875,7 +1280,7 @@ Behavior: {fault_type} simulation"""
         # Generate report with new 6-section format
         return client.generate_preflight_report(
             incident_description=incident.get("description", incident.get("summary", "")),
-            report_id=incident.get("report_id", "Unknown"),
+            report_id=incident.get("incident_id", "Unknown"),
             incident_location=f"{incident.get('city', '')}, {incident.get('state', '')}",
             incident_date=incident.get("date", "Unknown"),
             fault_type=fault_type,  # From config["fault_injection"]["fault_type"]
@@ -1888,9 +1293,6 @@ Behavior: {fault_type} simulation"""
         """Save all reports."""
         from src.reporting.unified_reporter import UnifiedReporter
         
-        # Add timing metrics to config for inclusion in output
-        config['timing_metrics'] = self.timing_metrics
-        
         reporter = UnifiedReporter(self.config.output_dir)
         return reporter.generate(
             incident=incident,
@@ -1900,24 +1302,16 @@ Behavior: {fault_type} simulation"""
         )
     
     def _print_summary(self, incident: Dict, safety: Dict, telemetry_count: int, paths: Dict):
-        """Print final summary with timing metrics."""
+        """Print final summary."""
         logger.info("")
         logger.info("=" * 70)
         logger.info("  PIPELINE COMPLETE")
         logger.info("=" * 70)
-        logger.info(f"  Report: {incident.get('report_id', 'Unknown')}")
+        logger.info(f"  Incident: {incident.get('incident_id', 'Unknown')}")
         logger.info(f"  Telemetry Points: {telemetry_count}")
         logger.info(f"  Hazard Level: {safety.get('safety_level', 'UNKNOWN')}")
         logger.info(f"  Recommendation: {safety.get('verdict', 'REVIEW')}")
         logger.info("")
-        
-        # Print timing metrics
-        if self.timing_metrics:
-            logger.info("  Timing Metrics:")
-            for step, duration in self.timing_metrics.items():
-                logger.info(f"    {step}: {duration}s")
-            logger.info("")
-        
         logger.info("  Output Files:")
         for key, path in paths.items():
             if path:
@@ -1953,7 +1347,7 @@ QGroundControl Connection:
     parser.add_argument("--batch", "-b", type=str, default=None,
                         help="JSON file for batch processing (single object or array)")
     parser.add_argument("--headless", action="store_true",
-                        help="Run without Gazebo GUI (uses SIH simulator)")
+                        help="Run without Gazebo GUI")
     parser.add_argument("--skip-px4", action="store_true",
                         help="Skip PX4 startup (assume already running)")
     parser.add_argument("--wsl-ip", type=str, default=None,
@@ -1963,9 +1357,6 @@ QGroundControl Connection:
     parser.add_argument("--vehicle", type=str, default="iris",
                         choices=["iris", "typhoon_h480", "plane", "rover"],
                         help="PX4 vehicle type")
-    parser.add_argument("--simulator", "-s", type=str, default="auto",
-                        choices=["auto", "sihsim_quadx", "gz_x500", "gazebo-classic_iris"],
-                        help="Simulator target (auto: sihsim_quadx for headless, gz_x500 for GUI)")
     
     args = parser.parse_args()
     
@@ -1975,7 +1366,6 @@ QGroundControl Connection:
         qgc_port=args.qgc_port,
         headless=args.headless,
         vehicle=args.vehicle,
-        simulator=args.simulator,
     )
     
     # Run pipeline
@@ -2018,10 +1408,8 @@ QGroundControl Connection:
                 logger.info(f"{'='*60}")
                 
                 # Create temp incident in expected format
-                report_id = record.get("report_id", f"Batch_{idx+1}")
                 incident = {
-                    "report_id": report_id,
-                    "incident_id": report_id,  # Alias for compatibility
+                    "incident_id": record.get("incident_id", f"Batch_{idx+1}"),
                     "date": record.get("date", ""),
                     "city": record.get("city", "Unknown"),
                     "state": record.get("state", ""),
@@ -2038,14 +1426,14 @@ QGroundControl Connection:
                         skip_px4=args.skip_px4 or (idx > 0)  # Skip PX4 after first
                     )
                     all_reports.append({
-                        "incident_id": report_id,
+                        "incident_id": incident["incident_id"],
                         "output_dir": str(paths.get("report_dir", "")),
                         "status": "success",
                     })
                 except Exception as e:
                     logger.error(f"Record {idx+1} failed: {e}")
                     all_reports.append({
-                        "incident_id": report_id,
+                        "incident_id": incident["incident_id"],
                         "status": "failed",
                         "error": str(e),
                     })
