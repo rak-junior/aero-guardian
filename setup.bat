@@ -4,7 +4,7 @@ REM AeroGuardian Setup Script for Windows
 REM =============================================================================
 REM Author: AeroGuardian Team (Tiny Coders)
 REM Date: 2026-02-04
-REM Version: 2.0
+REM Version: 1.0
 REM
 REM This script sets up the AeroGuardian Python environment on Windows.
 REM For PX4/Gazebo setup in WSL2, see scripts/setup_px4_gui.sh
@@ -15,7 +15,7 @@ setlocal enabledelayedexpansion
 echo.
 echo ======================================================================
 echo   AeroGuardian Setup for Windows
-echo   Version 2.0
+echo   Version 1.0
 echo ======================================================================
 echo.
 

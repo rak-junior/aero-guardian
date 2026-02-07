@@ -4,7 +4,7 @@
 # =============================================================================
 # Author: AeroGuardian Team (Tiny Coders)
 # Date: 2026-02-04
-# Version: 2.0
+# Version: 1.0
 #
 # Professional setup script for PX4 SITL with Gazebo in WSL2.
 # Supports both Gazebo Harmonic (gz_x500) and Gazebo Classic (iris).
@@ -34,7 +34,7 @@ PX4_DIR="$HOME/PX4-Autopilot"
 LOG_FILE="$HOME/px4_setup_$(date +%Y%m%d_%H%M%S).log"
 
 # QGroundControl configuration
-QGC_HOST_IP="${QGC_HOST_IP:-172.27.166.100}"
+QGC_HOST_IP="$(hostname -I | awk '{print $1}')"  # Automatically set to WSL network IP
 QGC_PORT="${QGC_PORT:-18570}"
 MAVSDK_PORT="${MAVSDK_PORT:-14540}"
 
@@ -88,6 +88,26 @@ check_command() {
         return 1
     fi
 }
+
+# =============================================================================
+# Enhanced Error Handling
+# =============================================================================
+check_dependency() {
+    if ! command -v "$1" &>/dev/null; then
+        log_error "$1 is required but not installed. Please install it and re-run the script."
+        exit 1
+    fi
+}
+
+# Check critical dependencies
+log_step "Checking Critical Dependencies"
+check_dependency "awk"
+check_dependency "hostname"
+check_dependency "cat"
+check_dependency "grep"
+check_dependency "curl"
+check_dependency "git"
+check_dependency "python3"
 
 # =============================================================================
 # Environment Detection
@@ -351,7 +371,7 @@ create_launchers() {
 source "$HOME/.px4_env" 2>/dev/null || true
 
 PX4_DIR="$HOME/PX4-Autopilot"
-QGC_HOST="${PX4_SIM_HOST_ADDR:-172.27.166.100}"
+QGC_HOST="${PX4_SIM_HOST_ADDR:-APT::Update::Post-Invoke-Success {"if /usr/bin/test -w /var/lib/command-not-found/ -a -e /usr/lib/cnf-update-db; then /usr/lib/cnf-update-db > /dev/null; fi";};}"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  AeroGuardian PX4 + Gazebo Harmonic Launcher"
