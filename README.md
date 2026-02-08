@@ -19,6 +19,7 @@ Transform FAA UAS sighting reports into actionable pre-flight safety recommendat
 ## 📋 Table of Contents
 
 - [Overview](#-overview)
+- [Demo](#-demo)
 - [Key Features](#-key-features)
 - [System Architecture](#-system-architecture)
 - [Data Flow: Phase-by-Phase I/O](#-data-flow-phase-by-phase-inputoutput-specification)
@@ -64,6 +65,14 @@ The system:
 | 📊 **ESRI Trust Scoring** | Multiplicative scoring ensures all components must pass |
 | 🔄 **Two-Phase LLM Pipeline** | LLM #1 for scenario translation, LLM #2 for report generation |
 | 📈 **Full Telemetry Logging** | Every flight captures 50Hz IMU, GPS, motor outputs for audit |
+
+---
+
+## 🎬 Demo
+
+Watch AeroGuardian in action:
+
+▶️ **[Full Demo Video](https://drive.google.com/file/d/1NtuNWUXE0kxfTOPu8W49qsQFrtCrCV82/view?usp=sharing)** - Complete walkthrough of the automated pipeline processing an FAA sighting report
 
 ---
 
