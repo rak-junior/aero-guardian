@@ -25,15 +25,20 @@ class SightingFilter:
     Removes all pre-filtering and hazard classification logic ("Trust LLM" approach).
     """
     
-    def __init__(self, data_path: Optional[Path] = None):
+    def __init__(self, data_path: Optional[Path] = None, data_source: str = "sightings"):
         """
         Initialize the loader.
         
         Args:
-            data_path: Path to the FAA sightings JSON file. 
-                       Defaults to data/processed/faa_reports/faa_simulatable.json
+            data_path: Path to the FAA sightings JSON file.
+            data_source: 'sightings' (8000 high-risk) or 'failures' (31 confirmed crashes)
         """
-        self.data_path = data_path or Path("data/processed/faa_reports/faa_simulatable.json")
+        if data_path:
+            self.data_path = data_path
+        elif data_source == "failures":
+            self.data_path = Path("data/processed/faa_reports/faa_actual_failures.json")
+        else:
+            self.data_path = Path("data/processed/faa_reports/faa_high_risk_sightings.json")
         self._sightings: List[Dict] = []
     
     def load(self) -> int:
@@ -74,6 +79,9 @@ class SightingFilter:
                 "date": inc.get("date", ""),
                 "city": inc.get("city", ""),
                 "state": inc.get("state", ""),
+                # Preserve pre-classified fault data if available
+                "fault_type": inc.get("fault_type", ""),
+                "hazard_category": inc.get("hazard_category", ""),
             }
             self._sightings.append(report)
             
@@ -105,11 +113,11 @@ class SightingFilter:
 _filter: Optional[SightingFilter] = None
 
 
-def get_sighting_filter() -> SightingFilter:
+def get_sighting_filter(data_source: str = "sightings") -> SightingFilter:
     """Get singleton sighting filter instance."""
     global _filter
     if _filter is None:
-        _filter = SightingFilter()
+        _filter = SightingFilter(data_source=data_source)
     return _filter
 
 

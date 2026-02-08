@@ -8,16 +8,14 @@ Version: 1.0
 
 Fully automated pipeline that runs everything without user input:
 1. Start PX4 SITL with Gazebo GUI in WSL
-2. Connect to QGroundControl at configurable IP:port
-3. Load FAA UAS sighting report and generate configuration via LLM
-4. Execute flight mission and capture telemetry
-5. Generate safety reports (PDF/JSON) & Evaluation report (Excel/JSON)
+2. Load FAA UAS sighting report and generate configuration via LLM
+3. Execute flight mission and capture telemetry
+4. Generate safety reports (PDF/JSON) & Evaluation report (Excel/JSON)
 
 Usage:
-    python scripts/run_automated_pipeline.py                    # Default: sighting 0
-    python scripts/run_automated_pipeline.py -r 5               # Specific sighting
-    python scripts/run_automated_pipeline.py --headless         # No Gazebo GUI
-    python scripts/run_automated_pipeline.py --skip-px4         # Skip PX4 startup (already running)
+    python scripts/run_automated_pipeline.py --wsl-ip [IP_ADDRESS]                    # Default: sighting 0
+    python scripts/run_automated_pipeline.py -r 5 --wsl-ip [IP_ADDRESS]               # Specific sighting
+    python scripts/run_automated_pipeline.py --headless --wsl-ip [IP_ADDRESS]         # No Gazebo GUI
 """
 
 import os
@@ -95,6 +93,7 @@ class PipelineConfig:
     vehicle: str = "iris"
     world: str = "empty"
     headless: bool = False
+    data_source: str = "sightings"  # 'sightings' (8000) or 'failures' (31)
     
     # Output
     output_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "outputs")
@@ -810,10 +809,15 @@ class MissionExecutor:
             await asyncio.sleep(delay_sec)
             
             logger.info(f"💥 INJECTING FAULT: {fault_type} (severity: {severity})")
-            injection_success = await self._trigger_px4_fault(fault_type, severity)
-            if injection_success:
-                logger.info(f"✓ Fault {fault_type} injected successfully via PX4")
+            injection_result = await self._trigger_px4_fault(fault_type, severity)
+            
+            if injection_result is True:
+                logger.info(f"✓ Fault {fault_type} injected successfully via PX4 native")
+            elif injection_result is None:
+                # Behavioral violation - no hardware fault to inject
+                logger.info(f"✓ Fault {fault_type} is behavioral - normal flight (no hardware injection)")
             else:
+                # injection_result is False - actual injection failed
                 logger.warning(f"⚠ Actual {fault_type} injection failed - fallback to crash simulation")
             
         except asyncio.CancelledError:
@@ -903,7 +907,17 @@ class MissionExecutor:
                 failure_unit = FailureUnit.SENSOR_MAG
                 unit_name = "MAG"
                 
-            elif "baro" in fault_type_lower or "altitude" in fault_type_lower:
+            # IMPORTANT: Check for behavioral violations BEFORE hardware mappings
+            # This must come before "altitude" check since "altitude" is substring of "altitude_violation"
+            elif any(kw in fault_type_lower for kw in ["geofence", "airspace", "altitude_violation", "none", "unknown"]):
+                # Behavioral violations - NO hardware fault injection
+                # These are operational/procedural issues, not hardware failures
+                logger.info(f"   ⚠ Fault type '{fault_type}' is a behavioral violation (not hardware)")
+                logger.info(f"   → Skipping hardware fault injection - running normal flight")
+                return None  # Signal: no fault injected (not a failure, just not applicable)
+                
+            elif "baro" in fault_type_lower or ("altitude" in fault_type_lower and "violation" not in fault_type_lower):
+                # Only map to BARO if it's an altitude SENSOR issue, not a violation
                 failure_unit = FailureUnit.SENSOR_BARO
                 unit_name = "BARO"
                 
@@ -912,7 +926,7 @@ class MissionExecutor:
                 unit_name = "RC_SIGNAL"
                 
             else:
-                # Default to motor failure for unknown types
+                # Default to motor failure for unknown hardware-related types
                 logger.warning(f"   Unknown fault type '{fault_type}', defaulting to MOTOR failure")
                 failure_unit = FailureUnit.SYSTEM_MOTOR
                 unit_name = "MOTOR"
@@ -979,9 +993,9 @@ class AutomatedPipeline:
             # Step 1: Load FAA incident (do first to get location for PX4 home)
             self._step_header(1, "Load FAA Incident")
             incident = self._load_incident(incident_index)
-            logger.info(f"  ID: {incident.get('incident_id', 'Unknown')}")
+            logger.info(f"  ID: {incident.get('report_id', incident.get('incident_id', 'Unknown'))}")
             logger.info(f"  Location: {incident.get('city', 'Unknown')}, {incident.get('state', 'Unknown')}")
-            logger.info(f"  Type: {incident.get('incident_type', 'Unknown')}")
+            logger.info(f"  Type: {incident.get('fault_type', incident.get('hazard_category', 'Unknown'))}")
             
             # Step 2: Generate LLM configuration (before PX4 to get home location)
             self._step_header(2, "Generate LLM Configuration")
@@ -1035,10 +1049,10 @@ class AutomatedPipeline:
         """Run the pipeline for a specific incident dict (for batch processing)."""
         logger.info("")
         logger.info("=" * 60)
-        logger.info(f"  PROCESSING: {incident.get('incident_id', 'Unknown')}")
+        logger.info(f"  PROCESSING: {incident.get('report_id', incident.get('incident_id', 'Unknown'))}")
         logger.info("=" * 60)
         logger.info(f"  Location: {incident.get('city', 'Unknown')}, {incident.get('state', '')}")
-        logger.info(f"  Type: {incident.get('incident_type', 'other')}")
+        logger.info(f"  Type: {incident.get('fault_type', incident.get('incident_type', 'other'))}")
         logger.info("")
         
         try:
@@ -1079,7 +1093,7 @@ class AutomatedPipeline:
             # Summary
             logger.info("")
             logger.info("=" * 40)
-            logger.info(f"✓ COMPLETE: {incident.get('incident_id', 'Unknown')}")
+            logger.info(f"✓ COMPLETE: {incident.get('report_id', incident.get('incident_id', 'Unknown'))}")
             logger.info(f"  Output: {paths.get('report_dir', 'N/A')}")
             logger.info("=" * 40)
             
@@ -1103,7 +1117,7 @@ class AutomatedPipeline:
         """Load FAA sighting by index."""
         from src.faa.sighting_filter import get_sighting_filter
         
-        sighting_filter = get_sighting_filter()
+        sighting_filter = get_sighting_filter(data_source=self.config.data_source)
         count = sighting_filter.load()
         logger.info(f"  Available sightings: {count}")
         
@@ -1132,6 +1146,7 @@ class AutomatedPipeline:
             incident_description=incident.get("description", incident.get("summary", "")),
             incident_location=f"{incident.get('city', '')}, {incident.get('state', '')}",
             incident_type=incident.get("incident_type", "unknown"),
+            report_id=incident.get("report_id", incident.get("incident_id", "Unknown")),
         )
         
         # Log simulation mode from incident filter (MECHANICAL_TEST / AIRSPACE_SIGHTING)
@@ -1280,7 +1295,7 @@ Behavior: {fault_type} simulation"""
         # Generate report with new 6-section format
         return client.generate_preflight_report(
             incident_description=incident.get("description", incident.get("summary", "")),
-            report_id=incident.get("incident_id", "Unknown"),
+            report_id=incident.get("report_id", incident.get("incident_id", "Unknown")),
             incident_location=f"{incident.get('city', '')}, {incident.get('state', '')}",
             incident_date=incident.get("date", "Unknown"),
             fault_type=fault_type,  # From config["fault_injection"]["fault_type"]
@@ -1307,7 +1322,7 @@ Behavior: {fault_type} simulation"""
         logger.info("=" * 70)
         logger.info("  PIPELINE COMPLETE")
         logger.info("=" * 70)
-        logger.info(f"  Incident: {incident.get('incident_id', 'Unknown')}")
+        logger.info(f"  Incident: {incident.get('report_id', incident.get('incident_id', 'Unknown'))}")
         logger.info(f"  Telemetry Points: {telemetry_count}")
         logger.info(f"  Hazard Level: {safety.get('safety_level', 'UNKNOWN')}")
         logger.info(f"  Recommendation: {safety.get('verdict', 'REVIEW')}")
@@ -1357,6 +1372,9 @@ QGroundControl Connection:
     parser.add_argument("--vehicle", type=str, default="iris",
                         choices=["iris", "typhoon_h480", "plane", "rover"],
                         help="PX4 vehicle type")
+    parser.add_argument("--data-source", type=str, default="sightings",
+                        choices=["sightings", "failures"],
+                        help="Data source: 'sightings' (8000 high-risk) or 'failures' (31 confirmed crashes)")
     
     args = parser.parse_args()
     
@@ -1366,6 +1384,7 @@ QGroundControl Connection:
         qgc_port=args.qgc_port,
         headless=args.headless,
         vehicle=args.vehicle,
+        data_source=args.data_source,
     )
     
     # Run pipeline
