@@ -231,7 +231,9 @@ class CaseEvaluator:
         
         # 4. Perform Causal Subsystem Analysis (for research-level diagnosis)
         # This determines which subsystem failed FIRST and builds a causal chain
-        causal_result = self.causal_analyzer.analyze(detected_anomalies_dicts)
+        # Pass fault_type to help resolve ambiguous anomalies when supporting
+        # telemetry signals are missing due to simulation limitations
+        causal_result = self.causal_analyzer.analyze(detected_anomalies_dicts, fault_type)
         causal_analysis_dict = causal_result.to_dict()
         
         logger.info(

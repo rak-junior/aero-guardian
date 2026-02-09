@@ -232,7 +232,7 @@ class SubsystemCausalAnalyzer:
         """Initialize the causal analyzer."""
         logger.debug("SubsystemCausalAnalyzer initialized")
     
-    def analyze(self, anomalies: List[Dict]) -> CausalAnalysisResult:
+    def analyze(self, anomalies: List[Dict], fault_type: str = "") -> CausalAnalysisResult:
         """
         Analyze detected anomalies to determine root cause.
         
@@ -243,6 +243,9 @@ class SubsystemCausalAnalyzer:
                 - measured_value: float
                 - threshold: float
                 - severity: str (CRITICAL, HIGH, MEDIUM, LOW)
+            fault_type: Known fault type from simulation config (optional).
+                Used to resolve ambiguous anomalies when supporting signals
+                are missing due to simulation limitations.
         
         Returns:
             CausalAnalysisResult with root cause diagnosis
@@ -258,7 +261,7 @@ class SubsystemCausalAnalyzer:
         
         try:
             # Step 1: Resolve ambiguous anomalies and group by subsystem
-            subsystem_groups = self._group_by_subsystem(anomalies)
+            subsystem_groups = self._group_by_subsystem(anomalies, fault_type)
             
             if not subsystem_groups:
                 result.diagnosis_reasoning = "Could not map anomalies to subsystems."
@@ -320,13 +323,15 @@ class SubsystemCausalAnalyzer:
     
     def _group_by_subsystem(
         self, 
-        anomalies: List[Dict]
+        anomalies: List[Dict],
+        fault_type: str = ""
     ) -> Dict[str, List[Dict]]:
         """
         Group anomalies by subsystem, resolving ambiguous mappings.
         
         Args:
             anomalies: Raw anomaly list
+            fault_type: Known fault type for fallback resolution
             
         Returns:
             Dict mapping subsystem name to list of anomalies
@@ -347,7 +352,7 @@ class SubsystemCausalAnalyzer:
             
             # Resolve ambiguous subsystems using context
             if subsystem == "ambiguous":
-                subsystem = self._resolve_ambiguous(anomaly_type, all_anomaly_types)
+                subsystem = self._resolve_ambiguous(anomaly_type, all_anomaly_types, fault_type)
             
             # Skip if still ambiguous
             if subsystem == "ambiguous":
@@ -361,10 +366,26 @@ class SubsystemCausalAnalyzer:
         
         return groups
     
+    # Fault type to subsystem mapping (for fallback resolution)
+    FAULT_TYPE_TO_SUBSYSTEM = {
+        "battery_failure": "power",
+        "battery_depletion": "power",
+        "power_failure": "power",
+        "voltage_sag": "power",
+        "motor_failure": "propulsion",
+        "propulsion_failure": "propulsion",
+        "gps_loss": "navigation",
+        "gps_failure": "navigation",
+        "navigation_failure": "navigation",
+        "sensor_failure": "sensor",
+        "control_loss": "control",
+    }
+    
     def _resolve_ambiguous(
         self, 
         anomaly_type: str, 
-        all_anomaly_types: List[str]
+        all_anomaly_types: List[str],
+        fault_type: str = ""
     ) -> str:
         """
         Resolve an ambiguous anomaly to a specific subsystem based on context.
@@ -372,6 +393,7 @@ class SubsystemCausalAnalyzer:
         Args:
             anomaly_type: The ambiguous anomaly type
             all_anomaly_types: All anomaly types in the incident
+            fault_type: Known fault type for fallback resolution
             
         Returns:
             Resolved subsystem or "ambiguous" if cannot resolve
@@ -388,6 +410,17 @@ class SubsystemCausalAnalyzer:
                     f"Resolved '{anomaly_type}' to '{subsystem}' via supporting signal"
                 )
                 return subsystem
+        
+        # FALLBACK: If no supporting signals but fault_type is known,
+        # use fault_type to infer the subsystem (handles simulation limitations)
+        if fault_type:
+            fault_key = fault_type.lower().replace("-", "_").replace(" ", "_")
+            inferred_subsystem = self.FAULT_TYPE_TO_SUBSYSTEM.get(fault_key)
+            if inferred_subsystem and inferred_subsystem in rules:
+                logger.info(
+                    f"Resolved '{anomaly_type}' to '{inferred_subsystem}' via fault_type '{fault_type}' (fallback)"
+                )
+                return inferred_subsystem
         
         return "ambiguous"
     

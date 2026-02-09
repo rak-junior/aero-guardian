@@ -916,7 +916,7 @@ class MissionExecutor:
                 logger.info(f"   → Skipping hardware fault injection - running normal flight")
                 return None  # Signal: no fault injected (not a failure, just not applicable)
                 
-            elif "baro" in fault_type_lower or ("altitude" in fault_type_lower and "violation" not in fault_type_lower):
+            elif ("sensor" in fault_type_lower or "baro" in fault_type_lower) or ("altitude" in fault_type_lower and "violation" not in fault_type_lower):
                 # Only map to BARO if it's an altitude SENSOR issue, not a violation
                 failure_unit = FailureUnit.SENSOR_BARO
                 unit_name = "BARO"
@@ -1000,7 +1000,7 @@ class AutomatedPipeline:
             # Step 2: Generate LLM configuration (before PX4 to get home location)
             self._step_header(2, "Generate LLM Configuration")
             flight_config = self._generate_config(incident)
-            fault_type = flight_config.get('fault_injection', {}).get('fault_type', 'none')
+            fault_type = flight_config.get('fault_injection', 'none').get('fault_type', 'none')
             logger.info(f"  Fault Type: {fault_type}")
             logger.info(f"  Waypoints: {len(flight_config.get('waypoints', []))}")
             

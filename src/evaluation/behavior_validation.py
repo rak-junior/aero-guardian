@@ -382,7 +382,26 @@ class BehaviorValidator:
         pitches_deg_filtered = []  # Artifact-filtered for stats
         artifact_count = 0
         
-        for t in telemetry:
+        # =====================================================================
+        # WARMUP FILTERING: Skip initialization transients for roll/pitch stats
+        # This ensures stats computation matches temporal scanning behavior
+        # (anomaly detection already skips warmup period)
+        # =====================================================================
+        warmup_end_idx = 0
+        for i, t in enumerate(telemetry):
+            ts = t.get("timestamp")
+            if ts is not None:
+                ts_float = float(ts)
+            else:
+                ts_float = i * 0.1  # Assume ~10Hz if no timestamp
+            if ts_float >= TELEMETRY_WARMUP_SEC:
+                warmup_end_idx = i
+                break
+        
+        # Use post-warmup telemetry for attitude stats (prevents false positives from startup transients)
+        attitude_telemetry = telemetry[warmup_end_idx:] if warmup_end_idx < len(telemetry) else telemetry
+        
+        for t in attitude_telemetry:
             # Get altitude for artifact detection
             alt = t.get("alt", t.get("altitude_m", t.get("relative_alt", 0)))
             
@@ -469,7 +488,10 @@ class BehaviorValidator:
             
             # Additional Fields for new detectors
             "motor_outputs": [t.get("actuator_controls_0", t.get("servo_output_raw", [])) for t in telemetry],
-            "battery_voltages": [t.get("battery_status", {}).get("voltage_v", 0) for t in telemetry],
+            "battery_voltages": [
+                t.get("battery_v", t.get("battery_status", {}).get("voltage_v", 0))
+                for t in telemetry
+            ],
             "accel_data": [
                 [t.get("acc_x_m_s2", 0), t.get("acc_y_m_s2", 0), t.get("acc_z_m_s2", 0)] 
                 if "acc_x_m_s2" in t else t.get("accelerometer_m_s2", []) 
